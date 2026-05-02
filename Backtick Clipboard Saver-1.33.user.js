@@ -12,9 +12,10 @@
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
 // @connect      127.0.0.1
+// @downloadURL  https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/desktop-sync/Backtick%20Clipboard%20Saver-1.33.user.js
+// @updateURL    https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/desktop-sync/Backtick%20Clipboard%20Saver-1.33.user.js
 // @run-at       document-end
 // ==/UserScript==
-
 (function() {
     'use strict';
 
