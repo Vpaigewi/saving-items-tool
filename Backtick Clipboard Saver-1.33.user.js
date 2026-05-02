@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver (Desktop Sync Edition)
 // @namespace    http://tampermonkey.net/
-// @version      1.36
-// @description  Hold ` to save. Syncs with Electron App. Auto-toggles desktop hotkey on browser focus. Zero Compression.
+// @version      1.37
+// @description  Hold ` to save. Syncs with Electron App. Tap to capture clipboard, Hold to capture page. Zero Compression.
 // @author       Gemini
 // @match        *://*/*
 // @grant        GM_setValue
@@ -229,6 +229,16 @@
     window.addEventListener('focus', function() {
         setDesktopHotkeyStatus(true);
         pullFromDesktop(); // Also refresh data just in case
+    });
+    // When the browser window loses focus, tell the desktop app to resume the hotkey
+    window.addEventListener('blur', function() {
+        setDesktopHotkeyStatus(false);
+    });
+
+    // --- ADD THIS NEW FAILSAFE ---
+    // If the user closes the tab entirely, force the desktop app to resume the hotkey
+    window.addEventListener('beforeunload', function() {
+        setDesktopHotkeyStatus(false);
     });
 
     // When the browser window loses focus, tell the desktop app to resume the hotkey
@@ -656,18 +666,50 @@
         }
 
         if (e.key === settings.hotkey) { 
-            // If they released the key inside the scratchpad without clicking, type the character
+            
             if (e.target && e.target.id === 'gcs-scratchpad-input' && hasClickedWhileTriggerDown === false) { 
+                // The user tapped the key inside the scratchpad: Type the character
                 const start = e.target.selectionStart; 
                 const end = e.target.selectionEnd;
                 e.target.value = e.target.value.substring(0, start) + settings.hotkey + e.target.value.substring(end); 
                 e.target.selectionStart = start + 1;
                 e.target.selectionEnd = start + 1;
                 e.target.dispatchEvent(new Event('input', { bubbles: true })); 
+            
+            } else if (hasClickedWhileTriggerDown === false) {
+                // --- NEW LOGIC: TAP TO CAPTURE CLIPBOARD ---
+                // The user tapped the key WITHOUT clicking. Tell the desktop to grab the clipboard!
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: 'http://localhost:9876/capture-clipboard',
+                    onload: function(response) {
+                        // Desktop successfully captured the clipboard. Pull data to update UI.
+                        pullFromDesktop();
+                    },
+                    onerror: async function(error) {
+                        // Desktop app is closed! Fallback to the browser's native clipboard API.
+                        try {
+                            const text = await navigator.clipboard.readText();
+                            if (text !== '') {
+                                const newItem = { type: 'text', text: text };
+                                savedItems.unshift(newItem);
+                                if (savedItems.length > settings.maxItems) {
+                                    savedItems = savedItems.slice(0, settings.maxItems);
+                                }
+                                GM_setValue('saved_clicks', savedItems);
+                                renderList();
+                            }
+                        } catch (err) {
+                            console.warn("Could not read browser clipboard. Please ensure clipboard permissions are allowed.");
+                        }
+                    }
+                });
             } 
+            
             isTriggerDown = false; 
             isCombining = false; 
         } 
+        
         if (e.key === 'Control') {
             isCombining = false; 
         }
@@ -2198,7 +2240,7 @@
                 iconPrefix = '🖼️ ';
             }
             titleSpan.textContent = iconPrefix + newTitle; 
-            titleSpan.title = "Double-click to rename"; 
+            titleSpan.title = "Double-click to rename. Drag to reorder."; 
             renderTabs(); 
             
             if (isDashboardOpen === true) {
