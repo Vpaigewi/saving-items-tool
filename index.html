@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Backtick Clipboard Saver</title>
+    <style>
+        /* --- CORE STYLES & LAYOUT --- */
+        :root {
+            --app-font-size: 13px; /* Default font size */
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background-color: #1e1e1e; 
+            color: #e0e0e0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            font-size: var(--app-font-size);
+        }
+
+        /* --- SIDEBAR: SAVED ITEMS (NOW ON RIGHT) --- */
+        #sidebar {
+            width: 350px;
+            background-color: #2b2b2b;
+            border-left: 1px solid #444; 
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+        
+        .sidebar-header {
+            padding: 15px;
+            background-color: #111;
+            border-bottom: 1px solid #444;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .sidebar-header h2 {
+            margin: 0;
+            font-size: 18px;
+        }
+        
+        #saved-items-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .saved-item-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #444;
+        }
+
+        .saved-item-content {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 10px;
+            flex-grow: 1;
+        }
+
+        .saved-item-controls {
+            display: flex;
+            gap: 4px;
+        }
+
+        /* --- MAIN AREA: NOTEPAD DASHBOARD (NOW ON LEFT) --- */
+        #main-area {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: #1e1e1e;
+        }
+
+        .main-header {
+            padding: 15px 20px;
+            background-color: #111;
+            border-bottom: 1px solid #444;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .main-header h1 {
+            margin: 0;
+            font-size: 22px;
+        }
+
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Font Size Input */
+        #font-size-input {
+            width: 45px;
+            padding: 4px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            background-color: #2b2b2b;
+            color: #e0e0e0;
+            text-align: center;
+        }
+
+        #dashboard-grid {
+            flex-grow: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            align-content: flex-start;
+        }
+
+        /* --- DASHBOARD CARDS --- */
+        .card {
+            display: flex;
+            flex-direction: column;
+            /* Default sizes, can be overridden by inline styles from the database */
+            width: 300px;
+            height: 300px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+            border: 1px solid #444;
+            background-color: #3b3721;
+            /* Allow the user to drag the bottom right corner to resize the card */
+            resize: both;
+            overflow: hidden;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(0,0,0,0.2);
+            font-weight: bold;
+            cursor: grab; /* Indicates it can be dragged to reorder */
+        }
+        
+        .card-header:active {
+            cursor: grabbing;
+        }
+        
+        .card-title {
+            cursor: text; /* Indicates it can be clicked to rename */
+            flex-grow: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .card-body {
+            flex-grow: 1;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .card-textarea {
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: transparent;
+            resize: none;
+            outline: none;
+            font-family: inherit;
+            font-size: var(--app-font-size);
+            color: inherit;
+        }
+
+        .card-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            margin: auto;
+        }
+
+        /* --- BUTTON STYLES --- */
+        button {
+            cursor: pointer;
+            padding: 6px 10px;
+            border: 1px solid #002244;
+            background-color: #003666;
+            color: #3399ff;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        button:hover {
+            filter: brightness(1.2);
+        }
+
+        .btn-danger {
+            background-color: #8b0000;
+            border-color: #8b0000;
+            color: #ffcccc;
+        }
+
+        .btn-icon {
+            background: transparent;
+            border: none;
+            font-size: 14px;
+            padding: 4px;
+        }
+
+        .control-icon {
+            cursor: pointer;
+            margin-left: 6px;
+            font-size: 12px;
+        }
+        
+        /* Custom Scrollbar for dark mode */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e1e1e; }
+        ::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #777; }
+
+        /* --- EXPAND MODAL STYLES --- */
+        #modal-overlay {
+            display: none; /* Hidden by default */
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: rgba(0, 0, 0, 0.8);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-box {
+            display: flex;
+            flex-direction: column;
+            width: 85%;
+            height: 85%;
+            background-color: #3b3721; /* Default card color */
+            border: 1px solid #444;
+            border-radius: 8px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.8);
+            overflow: hidden;
+            transition: background-color 0.2s; /* Smooth color changes */
+        }
+
+        .modal-header {
+            padding: 15px 20px;
+            /* Use a semi-transparent black so the custom note color naturally shines through and tints the header */
+            background-color: rgba(0, 0, 0, 0.2); 
+            border-bottom: 1px solid rgba(0, 0, 0, 0.4);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 20px;
+            color: #e0e0e0;
+            cursor: text; /* Indicates it can be double-clicked to rename */
+        }
+
+        .modal-body {
+            flex-grow: 1;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden; /* Prevent body scroll, handle scroll in textarea or image pan */
+        }
+
+        #modal-textarea {
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: transparent;
+            resize: none;
+            outline: none;
+            font-family: inherit;
+            font-size: var(--app-font-size);
+            color: #e0e0e0;
+        }
+        
+        #modal-image-container {
+            display: none;
+            width: 100%;
+            height: 100%;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden; /* Clip image when zoomed */
+            cursor: grab; /* Show grab hand for panning */
+        }
+
+        #modal-image-container:active {
+            cursor: grabbing;
+        }
+
+        #modal-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            transition: transform 0.1s ease-out; /* Smooth zoom/pan steps */
+            /* Ensure it does not trigger default browser drag-and-drop */
+            -webkit-user-drag: none; 
+        }
+    </style>
+</head>
+<body>
+
+    <div id="main-area">
+        <div class="main-header">
+            <h1 id="app-title">Dashboard</h1>
+            <div class="header-controls">
+                <span title="Font Size">🔠</span>
+                <input type="number" id="font-size-input" min="10" max="30" value="13">
+                <button id="btn-add-note">+ Add Note</button>
+                <button class="btn-danger" id="btn-clear-notes">🗑️ Clear All Notes</button>
+            </div>
+        </div>
+        <div id="dashboard-grid">
+            </div>
+    </div>
+
+    <div id="sidebar">
+        <div class="sidebar-header">
+            <h2>Saved Items</h2>
+            <button class="btn-danger" id="btn-clear-items">🗑️ Clear</button>
+        </div>
+        <div id="saved-items-list">
+            </div>
+    </div>
+
+    <div id="modal-overlay">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2 id="modal-title" title="Double-click to rename">Note Title</h2>
+                <button id="modal-close" class="btn-danger">✖ Close</button>
+            </div>
+            <div class="modal-body" id="modal-body-container">
+                <textarea id="modal-textarea"></textarea>
+                <div id="modal-image-container">
+                    <img id="modal-image" src="" style="max-width: 100%; max-height: 100%; object-fit: contain;">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Import Electron's IPC tools so we can talk to our background server
+        const { ipcRenderer } = require('electron');
+
+        // This object holds our live, synced data
+        let globalData = {
+            savedItems: [],
+            notepadTabs: [],
+            settings: {}
+        };
+
+        // Track dragged card for reordering
+        let draggedTabId = null;
+        
+        // Track which tab is currently open in the modal
+        let activeModalTabId = null;
+
+        // --- IMAGE ZOOM & PAN ENGINE ---
+        let imgScale = 1;
+        let imgPanX = 0;
+        let imgPanY = 0;
+        let isDraggingImg = false;
+        let imgDragStartX = 0;
+        let imgDragStartY = 0;
+
+        const modalImageContainer = document.getElementById('modal-image-container');
+        const modalImage = document.getElementById('modal-image');
+
+        function updateImageTransform() {
+            modalImage.style.transform = `translate(${imgPanX}px, ${imgPanY}px) scale(${imgScale})`;
+        }
+
+        function resetImageTransform() {
+            imgScale = 1;
+            imgPanX = 0;
+            imgPanY = 0;
+            updateImageTransform();
+        }
+
+        // Scroll to Zoom
+        modalImageContainer.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            const zoomSpeed = 0.1;
+            
+            if (e.deltaY < 0) {
+                // Scrolling up -> Zoom In
+                imgScale += zoomSpeed;
+            } else {
+                // Scrolling down -> Zoom Out
+                imgScale -= zoomSpeed;
+            }
+            
+            // Set reasonable zoom limits
+            if (imgScale < 0.2) imgScale = 0.2; 
+            if (imgScale > 10) imgScale = 10;   
+            
+            updateImageTransform();
+        });
+
+        // Click to Pan
+        modalImageContainer.addEventListener('mousedown', function(e) {
+            // Only pan if we are zoomed in or moved
+            isDraggingImg = true;
+            imgDragStartX = e.clientX - imgPanX;
+            imgDragStartY = e.clientY - imgPanY;
+        });
+
+        window.addEventListener('mousemove', function(e) {
+            if (isDraggingImg === true) {
+                imgPanX = e.clientX - imgDragStartX;
+                imgPanY = e.clientY - imgDragStartY;
+                updateImageTransform();
+            }
+        });
+
+        window.addEventListener('mouseup', function() {
+            if (isDraggingImg === true) {
+                isDraggingImg = false;
+            }
+        });
+
+        // --- DATA SYNCING ---
+
+        async function loadDataFromServer() {
+            try {
+                const response = await fetch('http://localhost:9876/sync');
+                const parsedData = await response.json();
+                
+                // Update our local variables
+                if (parsedData.savedItems !== undefined) {
+                    globalData.savedItems = parsedData.savedItems;
+                }
+                if (parsedData.notepadTabs !== undefined) {
+                    globalData.notepadTabs = parsedData.notepadTabs;
+                }
+                if (parsedData.settings !== undefined) {
+                    globalData.settings = parsedData.settings;
+                }
+
+                // Apply Title
+                if (globalData.settings.widgetTitle !== undefined) {
+                    document.getElementById('app-title').textContent = globalData.settings.widgetTitle + ' - Desktop';
+                }
+
+                // Apply Font Size
+                if (globalData.settings.fontSize !== undefined) {
+                    let numericSize = parseInt(globalData.settings.fontSize, 10);
+                    if (!isNaN(numericSize)) {
+                        document.documentElement.style.setProperty('--app-font-size', numericSize + 'px');
+                        document.getElementById('font-size-input').value = numericSize;
+                    }
+                }
+
+                // Render the screen
+                renderSidebar();
+                renderGrid();
+                
+                // If the modal is open, silently update its content so you don't lose data if Tampermonkey pushes a change
+                syncModalContent();
+                
+            } catch (error) {
+                console.error("Failed to load data:", error);
+            }
+        }
+
+        async function saveDataToServer() {
+            try {
+                const payloadString = JSON.stringify(globalData);
+                await fetch('http://localhost:9876/sync', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: payloadString
+                });
+            } catch (error) {
+                console.error("Failed to save data:", error);
+            }
+        }
+
+        ipcRenderer.on('data-updated', function() {
+            loadDataFromServer();
+        });
+
+        // --- GLOBAL SETTINGS LISTENERS ---
+        
+        document.getElementById('font-size-input').addEventListener('change', function(e) {
+            let newSize = e.target.value;
+            document.documentElement.style.setProperty('--app-font-size', newSize + 'px');
+            globalData.settings.fontSize = newSize + 'px';
+            saveDataToServer();
+        });
+
+        // --- UNIFIED RENAME LOGIC ---
+
+        // Replaces a title element with an input box to rename a tab
+        function renameDesktopTab(titleContainer, tabId) {
+            const tab = globalData.notepadTabs.find(t => t.id === tabId);
+            if (!tab) return;
+            
+            // Prevent double-clicking creating multiple inputs
+            if (titleContainer.querySelector('input')) return;
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = tab.title;
+            input.style.fontSize = 'inherit';
+            input.style.padding = '2px 6px';
+            input.style.width = '150px';
+            input.style.backgroundColor = 'rgba(0,0,0,0.3)';
+            input.style.color = 'inherit';
+            input.style.border = '1px solid #777';
+            input.style.borderRadius = '3px';
+            input.style.outline = 'none';
+
+            // Clear the existing text, inject the input
+            titleContainer.textContent = (tab.type === 'image' ? '🖼️ ' : '📝 ');
+            titleContainer.appendChild(input);
+            input.focus();
+            
+            // Select all text so they can just start typing
+            input.select();
+
+            const commitRename = () => {
+                let newTitle = input.value.trim();
+                if (newTitle === '') newTitle = 'Untitled';
+                tab.title = newTitle;
+                
+                saveDataToServer();
+                renderGrid();
+                if (activeModalTabId === tab.id) syncModalContent();
+            };
+
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') commitRename();
+                if (e.key === 'Escape') {
+                    // Cancel changes
+                    renderGrid();
+                    if (activeModalTabId === tab.id) syncModalContent();
+                }
+            });
+            input.addEventListener('blur', commitRename);
+        }
+
+        // --- RENDERING: SIDEBAR ---
+
+        function renderSidebar() {
+            const listContainer = document.getElementById('saved-items-list');
+            listContainer.innerHTML = '';
+
+            if (globalData.savedItems.length === 0) {
+                listContainer.innerHTML = '<div style="text-align:center; opacity:0.5; margin-top:20px;">No items saved. Use your hotkey!</div>';
+                return;
+            }
+
+            globalData.savedItems.forEach(function(item, index) {
+                const row = document.createElement('div');
+                row.className = 'saved-item-row';
+
+                const content = document.createElement('div');
+                content.className = 'saved-item-content';
+
+                if (item.type === 'image') {
+                    content.textContent = '🖼️ Image Captured';
+                    content.title = item.text;
+                } else {
+                    const words = item.text.split(/\s+/);
+                    if (words.length > 4) {
+                        content.textContent = words.slice(0, 4).join(' ') + '...';
+                    } else {
+                        content.textContent = item.text;
+                    }
+                    content.title = item.text;
+                }
+
+                const controls = document.createElement('div');
+                controls.className = 'saved-item-controls';
+
+                const pushBtn = document.createElement('button');
+                pushBtn.className = 'btn-icon';
+                pushBtn.textContent = '←';
+                pushBtn.title = 'Push to new Notepad';
+                pushBtn.addEventListener('click', function() {
+                    const newId = Date.now();
+                    let newTitle = 'Note ' + (globalData.notepadTabs.length + 1);
+                    if (item.type === 'image') {
+                        newTitle = 'Image Note';
+                    }
+                    
+                    globalData.notepadTabs.push({
+                        id: newId,
+                        title: newTitle,
+                        text: item.text,
+                        type: item.type,
+                        color: '',
+                        textColor: ''
+                    });
+                    
+                    saveDataToServer();
+                    renderGrid();
+                });
+
+                const copyBtn = document.createElement('button');
+                copyBtn.textContent = 'Copy';
+                copyBtn.addEventListener('click', function() {
+                    navigator.clipboard.writeText(item.text);
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(function() {
+                        copyBtn.textContent = 'Copy';
+                    }, 1000);
+                });
+
+                const delBtn = document.createElement('button');
+                delBtn.className = 'btn-icon';
+                delBtn.style.color = '#ff6b6b';
+                delBtn.textContent = '✖';
+                delBtn.addEventListener('click', function() {
+                    globalData.savedItems.splice(index, 1);
+                    saveDataToServer();
+                    renderSidebar();
+                });
+
+                controls.appendChild(pushBtn);
+                controls.appendChild(copyBtn);
+                controls.appendChild(delBtn);
+
+                row.appendChild(content);
+                row.appendChild(controls);
+                listContainer.appendChild(row);
+            });
+        }
+
+
+        // --- RENDERING: DASHBOARD GRID ---
+
+        function renderGrid() {
+            const gridContainer = document.getElementById('dashboard-grid');
+            gridContainer.innerHTML = '';
+
+            globalData.notepadTabs.forEach(function(tab, index) {
+                const card = document.createElement('div');
+                card.className = 'card';
+
+                // Restore custom sizes if the user dragged to resize this specific card previously
+                if (tab.width !== undefined && tab.width !== '') {
+                    card.style.width = tab.width;
+                }
+                if (tab.height !== undefined && tab.height !== '') {
+                    card.style.height = tab.height;
+                }
+
+                // When the user lets go of the mouse on a card, check if they resized it. If they did, save the new size.
+                card.addEventListener('mouseup', function() {
+                    if (card.style.width !== tab.width || card.style.height !== tab.height) {
+                        tab.width = card.style.width;
+                        tab.height = card.style.height;
+                        saveDataToServer();
+                    }
+                });
+
+                // Apply Colors
+                if (tab.color !== '') {
+                    card.style.backgroundColor = tab.color;
+                }
+                if (tab.textColor !== '') {
+                    card.style.color = tab.textColor;
+                }
+
+                // --- HEADER (DRAG & DROP) ---
+                const header = document.createElement('div');
+                header.className = 'card-header';
+                
+                // Allow the header to be grabbed for reordering
+                header.draggable = true;
+                header.addEventListener('dragstart', function(e) {
+                    draggedTabId = tab.id;
+                    e.dataTransfer.effectAllowed = 'move';
+                });
+                header.addEventListener('dragover', function(e) {
+                    e.preventDefault(); // Necessary to allow dropping
+                });
+                header.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    if (draggedTabId !== null && draggedTabId !== tab.id) {
+                        const dragIdx = globalData.notepadTabs.findIndex(t => t.id === draggedTabId);
+                        const dropIdx = globalData.notepadTabs.findIndex(t => t.id === tab.id);
+                        
+                        // Splice out the dragged tab, and insert it at the target drop index
+                        const itemToMove = globalData.notepadTabs.splice(dragIdx, 1)[0];
+                        globalData.notepadTabs.splice(dropIdx, 0, itemToMove);
+                        
+                        saveDataToServer();
+                        renderGrid();
+                    }
+                    draggedTabId = null;
+                });
+                header.addEventListener('dragend', function() {
+                    draggedTabId = null;
+                });
+
+                // Title & Renaming
+                const title = document.createElement('div');
+                title.className = 'card-title';
+                title.title = 'Double-click to rename';
+                let icon = '📝 ';
+                if (tab.type === 'image') {
+                    icon = '🖼️ ';
+                }
+                title.textContent = icon + tab.title;
+                
+                title.addEventListener('dblclick', function(e) {
+                    e.stopPropagation(); // Stop drag event from firing
+                    renameDesktopTab(title, tab.id);
+                });
+
+                const headerControls = document.createElement('div');
+                
+                // Expand Button
+                const expandBtn = document.createElement('span');
+                expandBtn.className = 'control-icon';
+                expandBtn.textContent = '⛶';
+                expandBtn.title = 'Expand Note';
+                expandBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    openModal(tab.id);
+                });
+
+                // Color Picker - Background
+                const bgBtn = document.createElement('span');
+                bgBtn.className = 'control-icon';
+                bgBtn.textContent = '🎨';
+                bgBtn.title = 'Background Color';
+                
+                const bgInput = document.createElement('input');
+                bgInput.type = 'color';
+                bgInput.style.display = 'none';
+                if (tab.color !== '') {
+                    bgInput.value = tab.color;
+                } else {
+                    bgInput.value = '#3b3721';
+                }
+                bgInput.addEventListener('change', function(e) {
+                    tab.color = e.target.value;
+                    saveDataToServer();
+                    renderGrid();
+                });
+                bgBtn.addEventListener('click', function(e) {
+                    e.stopPropagation(); // Stop drag event from firing
+                    bgInput.click();
+                });
+
+                // Color Picker - Text
+                const txtBtn = document.createElement('span');
+                txtBtn.className = 'control-icon';
+                txtBtn.textContent = '🅰️';
+                txtBtn.title = 'Text Color';
+                
+                const txtInput = document.createElement('input');
+                txtInput.type = 'color';
+                txtInput.style.display = 'none';
+                if (tab.textColor !== '') {
+                    txtInput.value = tab.textColor;
+                } else {
+                    txtInput.value = '#e0e0e0';
+                }
+                txtInput.addEventListener('change', function(e) {
+                    tab.textColor = e.target.value;
+                    saveDataToServer();
+                    renderGrid();
+                });
+                txtBtn.addEventListener('click', function(e) {
+                    e.stopPropagation(); // Stop drag event from firing
+                    txtInput.click();
+                });
+
+                // Delete Button
+                const delBtn = document.createElement('span');
+                delBtn.className = 'control-icon';
+                delBtn.textContent = '✖';
+                delBtn.title = 'Delete Note';
+                delBtn.style.color = '#ff6b6b';
+                delBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    let shouldDelete = true;
+                    if (globalData.settings.askBeforeClear === true) {
+                        shouldDelete = confirm('Delete this note completely?');
+                    }
+                    if (shouldDelete === true) {
+                        globalData.notepadTabs.splice(index, 1);
+                        saveDataToServer();
+                        renderGrid();
+                    }
+                });
+
+                headerControls.appendChild(expandBtn);
+                headerControls.appendChild(bgBtn);
+                headerControls.appendChild(bgInput);
+                headerControls.appendChild(txtBtn);
+                headerControls.appendChild(txtInput);
+                headerControls.appendChild(delBtn);
+
+                header.appendChild(title);
+                header.appendChild(headerControls);
+
+                // --- BODY ---
+                const body = document.createElement('div');
+                body.className = 'card-body';
+
+                if (tab.type === 'image') {
+                    const img = document.createElement('img');
+                    img.src = tab.text;
+                    img.className = 'card-image';
+                    body.appendChild(img);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.className = 'card-textarea';
+                    ta.value = tab.text;
+                    
+                    // Save text automatically as you type
+                    ta.addEventListener('input', function(e) {
+                        tab.text = e.target.value;
+                        saveDataToServer();
+                    });
+                    body.appendChild(ta);
+                }
+
+                card.appendChild(header);
+                card.appendChild(body);
+                gridContainer.appendChild(card);
+            });
+        }
+
+
+        // --- MODAL ENGINE ---
+        
+        const modalOverlay = document.getElementById('modal-overlay');
+        const modalTitle = document.getElementById('modal-title');
+        const modalTextarea = document.getElementById('modal-textarea');
+        
+        // Opens the fullscreen view for a specific tab
+        function openModal(tabId) {
+            activeModalTabId = tabId;
+            resetImageTransform(); // Reset pan/zoom coordinates whenever a new modal is opened
+            syncModalContent();
+            modalOverlay.style.display = 'flex';
+        }
+        
+        // Syncs the data into the modal (called on open, and automatically if background data updates)
+        function syncModalContent() {
+            if (activeModalTabId === null) return;
+            
+            const tab = globalData.notepadTabs.find(t => t.id === activeModalTabId);
+            if (!tab) {
+                // The tab was deleted while the modal was open
+                closeModal();
+                return;
+            }
+            
+            let icon = tab.type === 'image' ? '🖼️ ' : '📝 ';
+            modalTitle.textContent = icon + tab.title;
+            
+            // Apply custom tab colors to the modal background
+            const modalBox = document.querySelector('.modal-box');
+            
+            // FIX: If color is empty, explicitly default to the card default (#3b3721) so it matches perfectly
+            modalBox.style.backgroundColor = tab.color !== '' ? tab.color : '#3b3721';
+            modalTextarea.style.color = tab.textColor !== '' ? tab.textColor : '#e0e0e0';
+            modalTitle.style.color = tab.textColor !== '' ? tab.textColor : '#e0e0e0';
+            
+            if (tab.type === 'image') {
+                modalTextarea.style.display = 'none';
+                modalImageContainer.style.display = 'flex';
+                modalImage.src = tab.text;
+            } else {
+                modalTextarea.style.display = 'block';
+                modalImageContainer.style.display = 'none';
+                // Only update value if the user isn't actively typing in it, to prevent cursor jumping
+                if (document.activeElement !== modalTextarea) {
+                    modalTextarea.value = tab.text;
+                }
+            }
+        }
+        
+        function closeModal() {
+            activeModalTabId = null;
+            modalOverlay.style.display = 'none';
+            renderGrid(); // Re-render grid to show any text changes made while in the modal
+        }
+        
+        // Save text as you type inside the big modal
+        modalTextarea.addEventListener('input', function(e) {
+            if (activeModalTabId !== null) {
+                const tab = globalData.notepadTabs.find(t => t.id === activeModalTabId);
+                if (tab) {
+                    tab.text = e.target.value;
+                    saveDataToServer();
+                }
+            }
+        });
+        
+        // Double-click the modal header to rename it!
+        modalTitle.addEventListener('dblclick', function(e) {
+            e.stopPropagation();
+            renameDesktopTab(modalTitle, activeModalTabId);
+        });
+
+        // Close modal listeners
+        document.getElementById('modal-close').addEventListener('click', closeModal);
+        modalOverlay.addEventListener('click', function(e) {
+            if (e.target === modalOverlay) {
+                closeModal(); // Close if clicking the dark background
+            }
+        });
+
+
+        // --- GLOBAL DASHBOARD BUTTONS ---
+
+        document.getElementById('btn-add-note').addEventListener('click', function() {
+            globalData.notepadTabs.push({
+                id: Date.now(),
+                title: 'Note ' + (globalData.notepadTabs.length + 1),
+                text: '',
+                type: 'text',
+                color: '',
+                textColor: '',
+                width: '',  
+                height: ''  
+            });
+            saveDataToServer();
+            renderGrid();
+        });
+
+        document.getElementById('btn-clear-items').addEventListener('click', function() {
+            if (globalData.settings.askBeforeClear === true) {
+                if (confirm('Clear all saved items from the sidebar?') === false) {
+                    return;
+                }
+            }
+            globalData.savedItems = [];
+            saveDataToServer();
+            renderSidebar();
+        });
+
+        document.getElementById('btn-clear-notes').addEventListener('click', function() {
+            if (globalData.settings.askBeforeClear === true) {
+                if (confirm('Wipe text from ALL notes?') === false) {
+                    return;
+                }
+            }
+            globalData.notepadTabs.forEach(function(tab) {
+                tab.text = '';
+                if (tab.type === 'image') {
+                    tab.type = 'text'; // Revert images back to text
+                }
+            });
+            saveDataToServer();
+            renderGrid();
+        });
+
+        // --- STARTUP ---
+        // Boot the app by pulling data from the server
+        loadDataFromServer();
+
+    </script>
+</body>
+</html>

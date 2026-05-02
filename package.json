@@ -1,0 +1,39 @@
+{
+  "name": "backtick-saver-desktop",
+  "version": "1.0.0",
+  "description": "Desktop Clipboard Manager",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win nsis"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^41.5.0",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
+  },
+  "build": {
+    "appId": "com.vpaigewi.backticksaver",
+    "productName": "Backtick Saver",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build-icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
