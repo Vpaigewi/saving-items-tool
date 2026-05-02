@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver (Desktop Sync Edition)
 // @namespace    http://tampermonkey.net/
-// @version      1.34
-// @description  Hold ` to save. Syncs with Local Electron App on port 9876. Zero Compression.
+// @version      1.35
+// @description  Hold ` to save. Syncs with Local Electron App. Fixed empty-array initialization crash.
 // @author       Gemini
 // @match        *://*/*
 // @grant        GM_setValue
@@ -16,6 +16,7 @@
 // @updateURL    https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/desktop-sync/Backtick%20Clipboard%20Saver-1.33.user.js
 // @run-at       document-end
 // ==/UserScript==
+
 (function() {
     'use strict';
 
@@ -88,6 +89,14 @@
     ];
     let rawTabs = GM_getValue('notepad_tabs', defaultTabs);
     
+    // --- CRITICAL BUG FIX ---
+    // If the storage accidentally saved an empty array, force it back to defaults so it doesn't crash!
+    if (Array.isArray(rawTabs) === false || rawTabs.length === 0) {
+        rawTabs = [
+            { id: Date.now(), title: 'Note 1', text: '', type: 'text', color: '', textColor: '' }
+        ];
+    }
+    
     // Ensure all tabs have the new properties
     let notepadTabs = rawTabs.map(function(tab) {
         if (tab.type === undefined) {
@@ -99,13 +108,13 @@
         return tab;
     });
     
-    // Load the active tab ID
+    // Load the active tab ID. Because of the failsafe above, notepadTabs[0] will ALWAYS exist.
     let activeTabId = GM_getValue('active_tab_id', notepadTabs[0].id);
     let activeTabExists = notepadTabs.find(function(t) { 
         return t.id === activeTabId; 
     });
     
-    // Fallback if the saved active tab was deleted
+    // Fallback if the saved active tab was somehow deleted
     if (activeTabExists === undefined) {
         activeTabId = notepadTabs[0].id;
     }
@@ -157,10 +166,13 @@
                             needsRender = true;
                         }
                         
+                        // Safety check: Only accept the sync if the notepad array actually has items in it
                         if (parsedData.notepadTabs !== undefined) {
-                            notepadTabs = parsedData.notepadTabs;
-                            GM_setValue('notepad_tabs', notepadTabs);
-                            needsRender = true;
+                            if (Array.isArray(parsedData.notepadTabs) === true && parsedData.notepadTabs.length > 0) {
+                                notepadTabs = parsedData.notepadTabs;
+                                GM_setValue('notepad_tabs', notepadTabs);
+                                needsRender = true;
+                            }
                         }
                         
                         if (parsedData.settings !== undefined) {
