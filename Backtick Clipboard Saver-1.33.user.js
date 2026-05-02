@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver (Desktop Sync Edition)
 // @namespace    http://tampermonkey.net/
-// @version      1.35
-// @description  Hold ` to save. Syncs with Local Electron App. Fixed empty-array initialization crash.
+// @version      1.36
+// @description  Hold ` to save. Syncs with Electron App. Auto-toggles desktop hotkey on browser focus. Zero Compression.
 // @author       Gemini
 // @match        *://*/*
 // @grant        GM_setValue
@@ -89,8 +89,7 @@
     ];
     let rawTabs = GM_getValue('notepad_tabs', defaultTabs);
     
-    // --- CRITICAL BUG FIX ---
-    // If the storage accidentally saved an empty array, force it back to defaults so it doesn't crash!
+    // If the storage accidentally saved an empty array, force it back to defaults
     if (Array.isArray(rawTabs) === false || rawTabs.length === 0) {
         rawTabs = [
             { id: Date.now(), title: 'Note 1', text: '', type: 'text', color: '', textColor: '' }
@@ -120,7 +119,7 @@
     }
 
     // ==========================================
-    // 2. DESKTOP SYNC ENGINE
+    // 2. DESKTOP SYNC ENGINE & HOTKEY CONTROL
     // ==========================================
 
     // Pushes the current browser state to the Electron Desktop app
@@ -144,7 +143,6 @@
             },
             onerror: function(error) {
                 // Desktop app is closed or unreachable. 
-                // We ignore this silently so the browser extension continues to work locally.
             }
         });
     }
@@ -166,7 +164,6 @@
                             needsRender = true;
                         }
                         
-                        // Safety check: Only accept the sync if the notepad array actually has items in it
                         if (parsedData.notepadTabs !== undefined) {
                             if (Array.isArray(parsedData.notepadTabs) === true && parsedData.notepadTabs.length > 0) {
                                 notepadTabs = parsedData.notepadTabs;
@@ -178,7 +175,7 @@
                         if (parsedData.settings !== undefined) {
                             settings = parsedData.settings;
                             GM_setValue('gcs_settings', settings);
-                            // Ensure the DOM updates if dark mode was toggled from desktop
+                            
                             if (settings.isDarkMode !== undefined) {
                                 isDarkMode = settings.isDarkMode;
                                 GM_setValue('is_dark_mode', isDarkMode);
@@ -203,9 +200,45 @@
                 }
             },
             onerror: function(error) {
-                // Desktop app is closed. Continue relying on Tampermonkey local storage.
+                // Desktop app is closed.
             }
         });
+    }
+
+    // Tells the background server to pause or resume the global OS shortcut
+    function setDesktopHotkeyStatus(shouldPause) {
+        let endpointUrl = 'http://localhost:9876/resume-hotkey';
+        
+        if (shouldPause === true) {
+            endpointUrl = 'http://localhost:9876/pause-hotkey';
+        }
+        
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: endpointUrl,
+            onload: function(response) {
+                // Silent success
+            },
+            onerror: function(error) {
+                // Server is closed
+            }
+        });
+    }
+
+    // When the browser window gets focus, pause the desktop app's hotkey
+    window.addEventListener('focus', function() {
+        setDesktopHotkeyStatus(true);
+        pullFromDesktop(); // Also refresh data just in case
+    });
+
+    // When the browser window loses focus, tell the desktop app to resume the hotkey
+    window.addEventListener('blur', function() {
+        setDesktopHotkeyStatus(false);
+    });
+
+    // Check focus on initial load just in case the browser loads in the background
+    if (document.hasFocus() === true) {
+        setDesktopHotkeyStatus(true);
     }
 
     // ==========================================
@@ -600,6 +633,7 @@
     }
 
     window.addEventListener('keydown', function(e) { 
+        // Do not intercept if dashboard is open so typing in dashboard is unaffected by global listeners
         if (isDashboardOpen === true) {
             return;
         }
@@ -609,6 +643,7 @@
                 isTriggerDown = true; 
                 hasClickedWhileTriggerDown = false; 
             } 
+            // Prevent typing spam inside the scratchpad while holding the key
             if (e.target && e.target.id === 'gcs-scratchpad-input') {
                 e.preventDefault(); 
             }
@@ -621,6 +656,7 @@
         }
 
         if (e.key === settings.hotkey) { 
+            // If they released the key inside the scratchpad without clicking, type the character
             if (e.target && e.target.id === 'gcs-scratchpad-input' && hasClickedWhileTriggerDown === false) { 
                 const start = e.target.selectionStart; 
                 const end = e.target.selectionEnd;
@@ -2808,7 +2844,7 @@
     renderList(); 
     renderTabs();
     
-    // Pull from desktop when user switches back to this browser tab
+    // Sync when returning to tab
     window.addEventListener('focus', function() { 
         pullFromDesktop();
     });
