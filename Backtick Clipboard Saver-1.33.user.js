@@ -9,6 +9,8 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_setClipboard
+// @downloadURL  https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/main/Backtick%20Clipboard%20Saver-1.33.user.js
+// @updateURL    https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/main/Backtick%20Clipboard%20Saver-1.33.user.js
 // @run-at       document-end
 // ==/UserScript==
 
