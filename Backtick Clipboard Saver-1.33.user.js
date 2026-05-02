@@ -1,16 +1,17 @@
 // ==UserScript==
-// @name         Backtick Clipboard Saver
+// @name         Backtick Clipboard Saver (Desktop Sync Edition)
 // @namespace    http://tampermonkey.net/
-// @version      1.33
-// @description  Hold ` to save. Fixed minimized-load bugs, position saving, Zero Compression.
+// @version      1.34
+// @description  Hold ` to save. Syncs with Local Electron App on port 9876. Zero Compression.
 // @author       Gemini
 // @match        *://*/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_setClipboard
-// @downloadURL  https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/main/Backtick%20Clipboard%20Saver-1.33.user.js
-// @updateURL    https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/main/Backtick%20Clipboard%20Saver-1.33.user.js
+// @grant        GM_xmlhttpRequest
+// @connect      localhost
+// @connect      127.0.0.1
 // @run-at       document-end
 // ==/UserScript==
 
@@ -35,7 +36,7 @@
         widgetTitle: 'Saved Items',
         askBeforeClear: true
     };
-
+    
     // Load the main user settings object from storage
     let settings = GM_getValue('gcs_settings', defaultSettings);
 
@@ -49,24 +50,24 @@
 
     // Interaction flags
     let isTriggerDown = false;
-    let isCombining = false;
+    let isCombining = false; 
     let hasClickedWhileTriggerDown = false;
     let isSettingsOpen = false;
     let isDashboardOpen = false;
-
+    
     // Tracks which tab is currently being dragged
     let draggedTabId = null;
 
     // Load the saved clipboard items
     let rawSavedItems = GM_getValue('saved_clicks', []);
-
+    
     // Force old items into the strict {type, text} object format
     let savedItems = rawSavedItems.map(function(item) {
         if (typeof item === 'string') {
             return { type: 'text', text: item };
         }
         if (item.plain !== undefined) {
-            return { type: 'text', text: item.plain };
+            return { type: 'text', text: item.plain }; 
         }
         if (item.type === undefined) {
             return { type: 'text', text: item.text };
@@ -78,40 +79,126 @@
     let isMinimized = GM_getValue('is_minimized', false);
     let isDarkMode = GM_getValue('is_dark_mode', true);
     let isNotepadOpen = GM_getValue('is_notepad_open', false);
-    let isCoupled = GM_getValue('is_coupled', true);
+    let isCoupled = GM_getValue('is_coupled', true); 
 
     // Load the Scratchpad tabs
     let defaultTabs = [
         { id: Date.now(), title: 'Note 1', text: '', type: 'text', color: '', textColor: '' }
     ];
     let rawTabs = GM_getValue('notepad_tabs', defaultTabs);
-
+    
     // Ensure all tabs have the new properties
     let notepadTabs = rawTabs.map(function(tab) {
         if (tab.type === undefined) {
-            tab.type = 'text';
+            tab.type = 'text'; 
         }
         if (tab.textColor === undefined) {
-            tab.textColor = '';
+            tab.textColor = ''; 
         }
         return tab;
     });
-
+    
     // Load the active tab ID
     let activeTabId = GM_getValue('active_tab_id', notepadTabs[0].id);
-    let activeTabExists = notepadTabs.find(function(t) {
-        return t.id === activeTabId;
+    let activeTabExists = notepadTabs.find(function(t) { 
+        return t.id === activeTabId; 
     });
-
+    
     // Fallback if the saved active tab was deleted
     if (activeTabExists === undefined) {
         activeTabId = notepadTabs[0].id;
     }
 
     // ==========================================
-    // 2. POSITION & SIZE FAILSAFES
+    // 2. DESKTOP SYNC ENGINE
     // ==========================================
 
+    // Pushes the current browser state to the Electron Desktop app
+    function pushToDesktop() {
+        const payload = {
+            savedItems: savedItems,
+            notepadTabs: notepadTabs,
+            settings: settings
+        };
+        const payloadString = JSON.stringify(payload);
+        
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://localhost:9876/sync',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            data: payloadString,
+            onload: function(response) {
+                // Request succeeded, desktop app was updated silently
+            },
+            onerror: function(error) {
+                // Desktop app is closed or unreachable. 
+                // We ignore this silently so the browser extension continues to work locally.
+            }
+        });
+    }
+
+    // Pulls the latest state from the Electron Desktop app
+    function pullFromDesktop() {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: 'http://localhost:9876/sync',
+            onload: function(response) {
+                if (response.status === 200) {
+                    try {
+                        const parsedData = JSON.parse(response.responseText);
+                        let needsRender = false;
+                        
+                        if (parsedData.savedItems !== undefined) {
+                            savedItems = parsedData.savedItems;
+                            GM_setValue('saved_clicks', savedItems);
+                            needsRender = true;
+                        }
+                        
+                        if (parsedData.notepadTabs !== undefined) {
+                            notepadTabs = parsedData.notepadTabs;
+                            GM_setValue('notepad_tabs', notepadTabs);
+                            needsRender = true;
+                        }
+                        
+                        if (parsedData.settings !== undefined) {
+                            settings = parsedData.settings;
+                            GM_setValue('gcs_settings', settings);
+                            // Ensure the DOM updates if dark mode was toggled from desktop
+                            if (settings.isDarkMode !== undefined) {
+                                isDarkMode = settings.isDarkMode;
+                                GM_setValue('is_dark_mode', isDarkMode);
+                                if (isDarkMode === true) {
+                                    document.documentElement.classList.add('gcs-dark-mode');
+                                } else {
+                                    document.documentElement.classList.remove('gcs-dark-mode');
+                                }
+                            }
+                        }
+                        
+                        if (needsRender === true) {
+                            renderList();
+                            renderTabs();
+                            if (isDashboardOpen === true) {
+                                renderLiveDashboard();
+                            }
+                        }
+                    } catch (e) {
+                        // Data from server was corrupted or not JSON. Ignore it.
+                    }
+                }
+            },
+            onerror: function(error) {
+                // Desktop app is closed. Continue relying on Tampermonkey local storage.
+            }
+        });
+    }
+
+    // ==========================================
+    // 3. POSITION & SIZE FAILSAFES
+    // ==========================================
+    
     const defaultMainPos = { right: '20px', bottom: '20px', left: 'auto', top: 'auto' };
     const defaultNotePos = { right: '310px', bottom: '20px', left: 'auto', top: 'auto' };
     const defaultMainSize = { width: '270px', height: '400px' };
@@ -129,7 +216,7 @@
                 return fallback;
             }
             if (val.includes('NaN') === true || val.includes('undefined') === true || val.includes('null') === true) {
-                return fallback;
+                return fallback; 
             }
         }
         return cleanObj;
@@ -152,17 +239,17 @@
     }
 
     // ==========================================
-    // 3. PANIC BUTTON LOGIC
+    // 4. PANIC BUTTON LOGIC
     // ==========================================
 
     window.addEventListener('keydown', function(e) {
         // Look for: Ctrl + Alt + 0
         if (e.ctrlKey === true && e.altKey === true && e.key === '0') {
             e.preventDefault();
-
+            
             // Delete user-defined default layouts to clear corruption
             GM_deleteValue('default_gcs_config');
-
+            
             // Force main widget to factory defaults
             mainWidget.style.left = 'auto';
             mainWidget.style.top = 'auto';
@@ -191,21 +278,21 @@
 
             // Save the clean coordinates
             savePosSize();
-
+            
             alert('Panic Button Triggered!\n\nWidget has been factory reset and moved to the bottom right.');
         }
     });
 
     // ==========================================
-    // 4. DOM CONTAINERS
+    // 5. DOM CONTAINERS
     // ==========================================
 
     const notepadWrapper = document.createElement('div');
-    notepadWrapper.className = 'gcs-floating-widget';
+    notepadWrapper.className = 'gcs-floating-widget'; 
     notepadWrapper.id = 'gcs-note-widget';
-
+    
     const mainWidget = document.createElement('div');
-    mainWidget.className = 'gcs-floating-widget';
+    mainWidget.className = 'gcs-floating-widget'; 
     mainWidget.id = 'gcs-main-widget';
 
     // The Live Overlay Container
@@ -218,7 +305,7 @@
     let noteHInput;
 
     // ==========================================
-    // 5. DRAG & DROP LOGIC (WINDOWS)
+    // 6. DRAG & DROP LOGIC (WINDOWS)
     // ==========================================
 
     let dragRelGapX = 0;
@@ -240,7 +327,7 @@
         let startY = 0;
         let rectDrag = null;
         let rectOther = null;
-
+        
         let otherContainer = null;
         if (draggedContainer === mainWidget) {
             otherContainer = notepadWrapper;
@@ -252,31 +339,31 @@
             const tag = e.target.tagName.toLowerCase();
             const isInteractive = ['button', 'input', 'select', 'textarea'].includes(tag);
             const isScrollbar = e.offsetX > e.target.clientWidth || e.offsetY > e.target.clientHeight;
-
+            
             if (isInteractive === true || isScrollbar === true) {
-                return;
+                return; 
             }
-
+            
             isDragging = true;
-            startX = e.clientX;
+            startX = e.clientX; 
             startY = e.clientY;
-
+            
             // Switch from right/bottom positioning to left/top positioning for dragging
             rectDrag = draggedContainer.getBoundingClientRect();
-            draggedContainer.style.left = rectDrag.left + 'px';
+            draggedContainer.style.left = rectDrag.left + 'px'; 
             draggedContainer.style.top = rectDrag.top + 'px';
             draggedContainer.style.bottom = 'auto';
             draggedContainer.style.right = 'auto';
 
             if (isCoupled === true && isNotepadOpen === true) {
                 rectOther = otherContainer.getBoundingClientRect();
-                otherContainer.style.left = rectOther.left + 'px';
+                otherContainer.style.left = rectOther.left + 'px'; 
                 otherContainer.style.top = rectOther.top + 'px';
                 otherContainer.style.bottom = 'auto';
                 otherContainer.style.right = 'auto';
-
+                
                 // Calculate the fixed gap between the two windows
-                dragRelGapX = rectOther.left - rectDrag.left;
+                dragRelGapX = rectOther.left - rectDrag.left; 
                 dragRelGapY = rectOther.top - rectDrag.top;
             }
             bringToFront(draggedContainer);
@@ -288,20 +375,20 @@
             }
             const dx = e.clientX - startX;
             const dy = e.clientY - startY;
-
-            draggedContainer.style.left = (rectDrag.left + dx) + 'px';
+            
+            draggedContainer.style.left = (rectDrag.left + dx) + 'px'; 
             draggedContainer.style.top = (rectDrag.top + dy) + 'px';
-
-            if (isCoupled === true && isNotepadOpen === true) {
-                otherContainer.style.left = (rectDrag.left + dx + dragRelGapX) + 'px';
-                otherContainer.style.top = (rectDrag.top + dy + dragRelGapY) + 'px';
+            
+            if (isCoupled === true && isNotepadOpen === true) { 
+                otherContainer.style.left = (rectDrag.left + dx + dragRelGapX) + 'px'; 
+                otherContainer.style.top = (rectDrag.top + dy + dragRelGapY) + 'px'; 
             }
         });
 
-        document.addEventListener('mouseup', function() {
-            if (isDragging === true) {
-                isDragging = false;
-                savePosSize();
+        document.addEventListener('mouseup', function() { 
+            if (isDragging === true) { 
+                isDragging = false; 
+                savePosSize(); 
             }
         });
     }
@@ -313,63 +400,61 @@
         mainWidget.style.bottom = 'auto';
         notepadWrapper.style.right = 'auto';
         notepadWrapper.style.bottom = 'auto';
-
-        GM_setValue('main_pos', {
-            left: mainWidget.style.left,
-            top: mainWidget.style.top
+        
+        GM_setValue('main_pos', { 
+            left: mainWidget.style.left, 
+            top: mainWidget.style.top 
         });
-        GM_setValue('note_pos', {
-            left: notepadWrapper.style.left,
-            top: notepadWrapper.style.top
+        GM_setValue('note_pos', { 
+            left: notepadWrapper.style.left, 
+            top: notepadWrapper.style.top 
         });
-
-        // ONLY save the sizes if the window is expanded (so we don't accidentally save height: "auto")
+        
+        // ONLY save the sizes if the window is expanded
         if (isMinimized === false) {
-            mainSize = {
-                width: mainWidget.style.width,
-                height: mainWidget.style.height
+            mainSize = { 
+                width: mainWidget.style.width, 
+                height: mainWidget.style.height 
             };
             GM_setValue('main_size', mainSize);
         }
-
-        // Notepad is never minimized to 'auto' height, so it is safe to save its size always
-        noteSize = {
-            width: notepadWrapper.style.width,
-            height: notepadWrapper.style.height
+        
+        noteSize = { 
+            width: notepadWrapper.style.width, 
+            height: notepadWrapper.style.height 
         };
         GM_setValue('note_size', noteSize);
     }
 
     // ==========================================
-    // 6. LIVE RESIZE OBSERVER (COUPLED SCALING)
+    // 7. LIVE RESIZE OBSERVER (COUPLED SCALING)
     // ==========================================
-
+    
     // We use this flag to prevent infinite loops when the script resizes the other window programmatically
     let isSyncingSize = false;
-
+    
     // Parse the previous sizes safely to track how many pixels the user dragged
     let lastMainW = parseInt(mainSize.width, 10);
     if (isNaN(lastMainW) === true) {
         lastMainW = 270;
     }
-
+    
     let lastMainH = parseInt(mainSize.height, 10);
     if (isNaN(lastMainH) === true) {
         lastMainH = 400;
     }
-
+    
     let lastNoteW = parseInt(noteSize.width, 10);
     if (isNaN(lastNoteW) === true) {
         lastNoteW = 240;
     }
-
+    
     let lastNoteH = parseInt(noteSize.height, 10);
     if (isNaN(lastNoteH) === true) {
         lastNoteH = 400;
     }
 
     const resizeObserver = new ResizeObserver(function(entries) {
-        // If the script is currently applying a coupled size, ignore this event to prevent infinite loops
         if (isSyncingSize === true) {
             return;
         }
@@ -379,115 +464,104 @@
         let activeTarget = null;
 
         for (let entry of entries) {
-            // Ignore events where the window is collapsed or hidden
-            if (entry.target.offsetWidth > 50) {
-
-                // If the user resized the MAIN widget...
+            if (entry.target.offsetWidth > 50) { 
+                
                 if (entry.target === mainWidget) {
                     let newW = entry.target.offsetWidth;
                     let newH = entry.target.offsetHeight;
-
+                    
                     if (newW !== lastMainW || newH !== lastMainH) {
                         deltaW = newW - lastMainW;
                         deltaH = newH - lastMainH;
-
+                        
                         lastMainW = newW;
                         lastMainH = newH;
-
-                        // Update settings menu numbers if it exists
+                        
                         if (mainWInput !== undefined) {
                             mainWInput.value = newW;
                             mainHInput.value = newH;
                         }
-
+                        
                         mainSize = { width: newW + 'px', height: newH + 'px' };
                         GM_setValue('main_size', mainSize);
-
+                        
                         activeTarget = 'main';
                     }
-                }
-
-                // If the user resized the NOTEPAD widget...
+                } 
+                
                 else if (entry.target === notepadWrapper) {
                     let newW = entry.target.offsetWidth;
                     let newH = entry.target.offsetHeight;
-
+                    
                     if (newW !== lastNoteW || newH !== lastNoteH) {
                         deltaW = newW - lastNoteW;
                         deltaH = newH - lastNoteH;
-
+                        
                         lastNoteW = newW;
                         lastNoteH = newH;
-
-                        // Update settings menu numbers if it exists
+                        
                         if (noteWInput !== undefined) {
                             noteWInput.value = newW;
                             noteHInput.value = newH;
                         }
-
+                        
                         noteSize = { width: newW + 'px', height: newH + 'px' };
                         GM_setValue('note_size', noteSize);
-
+                        
                         activeTarget = 'note';
                     }
                 }
             }
         }
 
-        // Apply the exact same size change to the OTHER window if they are coupled
         if (isCoupled === true && isNotepadOpen === true && isMinimized === false && activeTarget !== null) {
             isSyncingSize = true;
-
+            
             if (activeTarget === 'main') {
-                // User resized Main, so apply deltas to Notepad
                 lastNoteW = lastNoteW + deltaW;
                 lastNoteH = lastNoteH + deltaH;
-
-                // Enforce CSS minimums so it doesn't break
-                if (lastNoteW < 150) {
-                    lastNoteW = 150;
+                
+                if (lastNoteW < 150) { 
+                    lastNoteW = 150; 
                 }
-                if (lastNoteH < 150) {
-                    lastNoteH = 150;
+                if (lastNoteH < 150) { 
+                    lastNoteH = 150; 
                 }
 
                 notepadWrapper.style.width = lastNoteW + 'px';
                 notepadWrapper.style.height = lastNoteH + 'px';
-
+                
                 if (noteWInput !== undefined) {
                     noteWInput.value = lastNoteW;
                     noteHInput.value = lastNoteH;
                 }
-
+                
                 noteSize = { width: lastNoteW + 'px', height: lastNoteH + 'px' };
                 GM_setValue('note_size', noteSize);
-
+                
             } else if (activeTarget === 'note') {
-                // User resized Notepad, so apply deltas to Main Widget
                 lastMainW = lastMainW + deltaW;
                 lastMainH = lastMainH + deltaH;
-
-                // Enforce CSS minimums so it doesn't break
-                if (lastMainW < 200) {
-                    lastMainW = 200;
+                
+                if (lastMainW < 200) { 
+                    lastMainW = 200; 
                 }
-                if (lastMainH < 150) {
-                    lastMainH = 150;
+                if (lastMainH < 150) { 
+                    lastMainH = 150; 
                 }
 
                 mainWidget.style.width = lastMainW + 'px';
                 mainWidget.style.height = lastMainH + 'px';
-
+                
                 if (mainWInput !== undefined) {
                     mainWInput.value = lastMainW;
                     mainHInput.value = lastMainH;
                 }
-
+                
                 mainSize = { width: lastMainW + 'px', height: lastMainH + 'px' };
                 GM_setValue('main_size', mainSize);
             }
-
-            // Release the lock slightly after the browser repaints
+            
             setTimeout(function() {
                 isSyncingSize = false;
             }, 50);
@@ -495,61 +569,58 @@
     });
 
     // ==========================================
-    // 7. EVENT INTERCEPTORS & COPY LOGIC
+    // 8. EVENT INTERCEPTORS & COPY LOGIC
     // ==========================================
 
     async function copyImageToClipboard(imgSrc) {
-        try {
-            const response = await fetch(imgSrc);
-            const blob = await response.blob();
+        try { 
+            const response = await fetch(imgSrc); 
+            const blob = await response.blob(); 
             const item = new ClipboardItem({[blob.type]: blob});
-            await navigator.clipboard.write([item]);
-            return true;
-        } catch (err) {
+            await navigator.clipboard.write([item]); 
+            return true; 
+        } catch (err) { 
             // Fallback if website blocks cross-origin downloading
-            GM_setClipboard(`<img src="${imgSrc}">`, 'html');
-            return false;
+            GM_setClipboard(`<img src="${imgSrc}">`, 'html'); 
+            return false; 
         }
     }
 
-    window.addEventListener('keydown', function(e) {
-        // Do not intercept if dashboard is open so typing in dashboard is unaffected by global listeners
+    window.addEventListener('keydown', function(e) { 
         if (isDashboardOpen === true) {
             return;
         }
 
-        if (e.key === settings.hotkey) {
-            if (isTriggerDown === false) {
-                isTriggerDown = true;
-                hasClickedWhileTriggerDown = false;
-            }
-            // Prevent typing spam inside the scratchpad while holding the key
+        if (e.key === settings.hotkey) { 
+            if (isTriggerDown === false) { 
+                isTriggerDown = true; 
+                hasClickedWhileTriggerDown = false; 
+            } 
             if (e.target && e.target.id === 'gcs-scratchpad-input') {
-                e.preventDefault();
+                e.preventDefault(); 
             }
-        }
+        } 
     });
-
-    window.addEventListener('keyup', function(e) {
+    
+    window.addEventListener('keyup', function(e) { 
         if (isDashboardOpen === true) {
             return;
         }
 
-        if (e.key === settings.hotkey) {
-            // If they released the key inside the scratchpad without clicking, type the character
-            if (e.target && e.target.id === 'gcs-scratchpad-input' && hasClickedWhileTriggerDown === false) {
-                const start = e.target.selectionStart;
+        if (e.key === settings.hotkey) { 
+            if (e.target && e.target.id === 'gcs-scratchpad-input' && hasClickedWhileTriggerDown === false) { 
+                const start = e.target.selectionStart; 
                 const end = e.target.selectionEnd;
-                e.target.value = e.target.value.substring(0, start) + settings.hotkey + e.target.value.substring(end);
+                e.target.value = e.target.value.substring(0, start) + settings.hotkey + e.target.value.substring(end); 
                 e.target.selectionStart = start + 1;
                 e.target.selectionEnd = start + 1;
-                e.target.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-            isTriggerDown = false;
-            isCombining = false;
-        }
+                e.target.dispatchEvent(new Event('input', { bubbles: true })); 
+            } 
+            isTriggerDown = false; 
+            isCombining = false; 
+        } 
         if (e.key === 'Control') {
-            isCombining = false;
+            isCombining = false; 
         }
     });
 
@@ -559,7 +630,7 @@
         }
 
         const isClickOutside = !mainWidget.contains(e.target) && !notepadWrapper.contains(e.target) && !dashboardOverlay.contains(e.target);
-
+        
         if (settings.autoCollapse === true && isMinimized === false && isClickOutside === true) {
             const toggleBtn = document.getElementById('gcs-toggle-btn');
             if (toggleBtn !== null) {
@@ -568,18 +639,18 @@
         }
 
         if (isTriggerDown === true) {
-            e.preventDefault();
-            e.stopPropagation();
-            hasClickedWhileTriggerDown = true;
-
+            e.preventDefault(); 
+            e.stopPropagation(); 
+            hasClickedWhileTriggerDown = true; 
+            
             let captured = null;
-
+            
             if (e.target && e.target.id === 'gcs-scratchpad-input') {
                 const start = e.target.selectionStart;
                 const end = e.target.selectionEnd;
                 const val = e.target.value;
                 let text = '';
-
+                
                 if (start !== end) {
                     text = val.substring(start, end).trim();
                 } else {
@@ -589,164 +660,165 @@
                     } else {
                         lineStart = lineStart + 1;
                     }
-
+                    
                     let lineEnd = val.indexOf('\n', start);
                     if (lineEnd === -1) {
                         lineEnd = val.length;
                     }
-
+                    
                     text = val.substring(lineStart, lineEnd).trim();
                 }
-
+                
                 if (text !== '') {
                     captured = { type: 'text', text: text };
                 }
-            } else if (e.target && e.target.tagName.toLowerCase() === 'img') {
+            } else if (e.target && e.target.tagName.toLowerCase() === 'img') { 
                 captured = { type: 'image', text: e.target.src };
-            } else {
-                let text = window.getSelection().toString().trim();
+            } else { 
+                let text = window.getSelection().toString().trim(); 
                 if (text === '') {
-                    text = (e.target.innerText || e.target.textContent || '').trim();
+                    text = (e.target.innerText || e.target.textContent || '').trim(); 
                 }
-                if (text !== '') {
+                if (text !== '') { 
                     const sentenceEndRegex = /(?<!\b(?:mr|mrs|ms|dr|prof|sr|jr|vs|etc|st|ave|rd|inc|ltd|co|corp))(?<!\b[A-Z])[.!?]+/i;
                     const match = text.match(sentenceEndRegex);
                     if (match !== null) {
-                        text = text.substring(0, match.index + match[0].length).trim();
+                        text = text.substring(0, match.index + match[0].length).trim(); 
                     }
                     if (text !== '') {
-                        captured = { type: 'text', text: text };
+                        captured = { type: 'text', text: text }; 
                     }
-                }
+                } 
             }
 
-            if (captured !== null) {
+            if (captured !== null) { 
                 const isCtrlTextAppend = (e.ctrlKey === true && captured.type === 'text' && savedItems.length > 0 && savedItems[0].type === 'text');
-
-                if (isCtrlTextAppend === true && isCombining === true) {
-                    savedItems[0].text = savedItems[0].text + '\n' + captured.text;
-                } else {
-                    savedItems.unshift(captured);
+                
+                if (isCtrlTextAppend === true && isCombining === true) { 
+                    savedItems[0].text = savedItems[0].text + '\n' + captured.text; 
+                } else { 
+                    savedItems.unshift(captured); 
                     if (e.ctrlKey === true) {
                         isCombining = false;
                     } else {
                         isCombining = true;
                     }
                 }
-
+                
                 if (savedItems.length > settings.maxItems) {
                     savedItems = savedItems.slice(0, settings.maxItems);
                 }
-
-                GM_setValue('saved_clicks', savedItems);
-
+                
+                GM_setValue('saved_clicks', savedItems); 
+                pushToDesktop(); // Sync update
+                
                 if (captured.type === 'image') {
-                    copyImageToClipboard(captured.text);
+                    copyImageToClipboard(captured.text); 
                 } else {
-                    GM_setClipboard(savedItems[0].text, 'text');
+                    GM_setClipboard(savedItems[0].text, 'text'); 
                 }
-
-                window.getSelection().removeAllRanges();
-                renderList();
+                
+                window.getSelection().removeAllRanges(); 
+                renderList(); 
             }
         }
     }, true);
 
     // ==========================================
-    // 8. STYLES & THEMING
+    // 9. STYLES & THEMING
     // ==========================================
 
     const styleBlock = document.createElement('style');
     styleBlock.textContent = `
-        :root {
-            --gcs-bg: #ffffff;
-            --gcs-header-bg: #f8f9fa;
-            --gcs-text: #333333;
-            --gcs-border: #cccccc;
-            --gcs-row-border: #f0f0f0;
-            --gcs-btn-bg: #e9ecef;
-            --gcs-btn-border: #bbbbbb;
-            --gcs-btn-text: #333333;
-            --gcs-controls-bg: #f1f3f5;
-            --gcs-success-bg: #d4edda;
-            --gcs-success-border: #c3e6cb;
-            --gcs-danger-bg: #ff6b6b;
-            --gcs-danger-text: #ffffff;
-            --gcs-note-bg: #fffbe6;
-            --gcs-note-border: #e8d65a;
-            --gcs-note-text: #333333;
-            --gcs-note-tab-bg: #f4edd0;
-            --gcs-font-size: ${settings.fontSize};
+        :root { 
+            --gcs-bg: #ffffff; 
+            --gcs-header-bg: #f8f9fa; 
+            --gcs-text: #333333; 
+            --gcs-border: #cccccc; 
+            --gcs-row-border: #f0f0f0; 
+            --gcs-btn-bg: #e9ecef; 
+            --gcs-btn-border: #bbbbbb; 
+            --gcs-btn-text: #333333; 
+            --gcs-controls-bg: #f1f3f5; 
+            --gcs-success-bg: #d4edda; 
+            --gcs-success-border: #c3e6cb; 
+            --gcs-danger-bg: #ff6b6b; 
+            --gcs-danger-text: #ffffff; 
+            --gcs-note-bg: #fffbe6; 
+            --gcs-note-border: #e8d65a; 
+            --gcs-note-text: #333333; 
+            --gcs-note-tab-bg: #f4edd0; 
+            --gcs-font-size: ${settings.fontSize}; 
         }
-        .gcs-dark-mode {
-            --gcs-bg: #2b2b2b;
-            --gcs-header-bg: #1e1e1e;
-            --gcs-text: #c0c0c0;
-            --gcs-border: #111111;
-            --gcs-row-border: #3a3a3a;
-            --gcs-btn-bg: #003666;
-            --gcs-btn-border: #002244;
-            --gcs-btn-text: #3399ff;
-            --gcs-controls-bg: #222222;
-            --gcs-success-bg: #005522;
-            --gcs-success-border: #007733;
-            --gcs-danger-bg: #8b0000;
-            --gcs-danger-text: #ffcccc;
-            --gcs-note-bg: #3b3721;
-            --gcs-note-border: #635c2b;
-            --gcs-note-text: #e0e0e0;
-            --gcs-note-tab-bg: #2d2a19;
+        .gcs-dark-mode { 
+            --gcs-bg: #2b2b2b; 
+            --gcs-header-bg: #1e1e1e; 
+            --gcs-text: #c0c0c0; 
+            --gcs-border: #111111; 
+            --gcs-row-border: #3a3a3a; 
+            --gcs-btn-bg: #003666; 
+            --gcs-btn-border: #002244; 
+            --gcs-btn-text: #3399ff; 
+            --gcs-controls-bg: #222222; 
+            --gcs-success-bg: #005522; 
+            --gcs-success-border: #007733; 
+            --gcs-danger-bg: #8b0000; 
+            --gcs-danger-text: #ffcccc; 
+            --gcs-note-bg: #3b3721; 
+            --gcs-note-border: #635c2b; 
+            --gcs-note-text: #e0e0e0; 
+            --gcs-note-tab-bg: #2d2a19; 
         }
-        .gcs-floating-widget {
-            font-family: Arial, sans-serif;
-            font-size: var(--gcs-font-size);
-            box-sizing: border-box;
-            z-index: 2147483646;
+        .gcs-floating-widget { 
+            font-family: Arial, sans-serif; 
+            font-size: var(--gcs-font-size); 
+            box-sizing: border-box; 
+            z-index: 2147483646; 
         }
-        .gcs-floating-widget * {
-            box-sizing: border-box;
+        .gcs-floating-widget * { 
+            box-sizing: border-box; 
         }
-        .gcs-floating-widget select,
-        .gcs-floating-widget input[type="text"],
-        .gcs-floating-widget input[type="number"] {
-            background-color: var(--gcs-bg);
-            color: var(--gcs-text);
-            border: 1px solid var(--gcs-border);
-            border-radius: 3px;
-            padding: 2px 4px;
+        .gcs-floating-widget select, 
+        .gcs-floating-widget input[type="text"], 
+        .gcs-floating-widget input[type="number"] { 
+            background-color: var(--gcs-bg); 
+            color: var(--gcs-text); 
+            border: 1px solid var(--gcs-border); 
+            border-radius: 3px; 
+            padding: 2px 4px; 
             font-size: 11px;
         }
-        .gcs-floating-widget button {
+        .gcs-floating-widget button { 
             font-size: 11px;
         }
-        .gcs-floating-widget button:hover {
-            filter: brightness(1.1);
+        .gcs-floating-widget button:hover { 
+            filter: brightness(1.1); 
         }
-        .gcs-settings-panel button:active {
-            filter: brightness(0.9);
+        .gcs-settings-panel button:active { 
+            filter: brightness(0.9); 
         }
-        .gcs-tab:hover {
-            filter: brightness(1.1);
+        .gcs-tab:hover { 
+            filter: brightness(1.1); 
         }
-        #gcs-tab-bar::-webkit-scrollbar,
-        .gcs-list-scroll::-webkit-scrollbar,
-        .gcs-settings-panel::-webkit-scrollbar,
-        #gcs-scratchpad-input::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
+        #gcs-tab-bar::-webkit-scrollbar, 
+        .gcs-list-scroll::-webkit-scrollbar, 
+        .gcs-settings-panel::-webkit-scrollbar, 
+        #gcs-scratchpad-input::-webkit-scrollbar { 
+            width: 6px; 
+            height: 6px; 
         }
-        #gcs-tab-bar::-webkit-scrollbar-track,
-        .gcs-list-scroll::-webkit-scrollbar-track,
-        .gcs-settings-panel::-webkit-scrollbar-track,
-        #gcs-scratchpad-input::-webkit-scrollbar-track {
-            background: transparent;
+        #gcs-tab-bar::-webkit-scrollbar-track, 
+        .gcs-list-scroll::-webkit-scrollbar-track, 
+        .gcs-settings-panel::-webkit-scrollbar-track, 
+        #gcs-scratchpad-input::-webkit-scrollbar-track { 
+            background: transparent; 
         }
-        #gcs-tab-bar::-webkit-scrollbar-thumb,
-        .gcs-list-scroll::-webkit-scrollbar-thumb,
-        .gcs-settings-panel::-webkit-scrollbar-thumb,
-        #gcs-scratchpad-input::-webkit-scrollbar-thumb {
-            background: rgba(0,0,0,0.2);
-            border-radius: 4px;
+        #gcs-tab-bar::-webkit-scrollbar-thumb, 
+        .gcs-list-scroll::-webkit-scrollbar-thumb, 
+        .gcs-settings-panel::-webkit-scrollbar-thumb, 
+        #gcs-scratchpad-input::-webkit-scrollbar-thumb { 
+            background: rgba(0,0,0,0.2); 
+            border-radius: 4px; 
         }
 
         /* --- Live Dashboard Overlay Styles --- */
@@ -865,13 +937,13 @@
         }
     `;
     document.head.appendChild(styleBlock);
-
+    
     if (isDarkMode === true) {
         document.documentElement.classList.add('gcs-dark-mode');
     }
 
     // ==========================================
-    // 9. UI CONSTRUCTION: NOTEPAD
+    // 10. UI CONSTRUCTION: NOTEPAD
     // ==========================================
 
     notepadWrapper.style.position = 'fixed';
@@ -887,19 +959,19 @@
     notepadWrapper.style.border = '1px solid var(--gcs-note-border)';
     notepadWrapper.style.borderRadius = '6px';
     notepadWrapper.style.boxShadow = '0 6px 12px rgba(0,0,0,0.4)';
-
+    
     if (isNotepadOpen === true && isMinimized === false) {
         notepadWrapper.style.display = 'flex';
     } else {
         notepadWrapper.style.display = 'none';
     }
-
+    
     notepadWrapper.style.flexDirection = 'column';
     notepadWrapper.style.overflow = 'hidden';
     notepadWrapper.style.transition = 'background-color 0.2s';
     notepadWrapper.style.resize = 'both';
 
-    const notepadHeader = document.createElement('div');
+    const notepadHeader = document.createElement('div'); 
     notepadHeader.textContent = 'Scratchpad';
     notepadHeader.style.padding = '4px 10px';
     notepadHeader.style.backgroundColor = 'rgba(0,0,0,0.1)';
@@ -911,14 +983,14 @@
     notepadHeader.style.textAlign = 'center';
     notepadHeader.style.flexShrink = '0';
 
-    const tabBar = document.createElement('div');
+    const tabBar = document.createElement('div'); 
     tabBar.style.display = 'flex';
     tabBar.style.overflowX = 'auto';
     tabBar.style.backgroundColor = 'var(--gcs-note-tab-bg)';
     tabBar.style.borderBottom = '1px solid var(--gcs-note-border)';
     tabBar.style.flexShrink = '0';
 
-    const notepadInput = document.createElement('textarea');
+    const notepadInput = document.createElement('textarea'); 
     notepadInput.id = 'gcs-scratchpad-input';
     notepadInput.style.flexGrow = '1';
     notepadInput.style.border = 'none';
@@ -930,7 +1002,7 @@
     notepadInput.style.fontFamily = 'inherit';
     notepadInput.style.lineHeight = '1.4';
 
-    const imageViewer = document.createElement('div');
+    const imageViewer = document.createElement('div'); 
     imageViewer.style.flexGrow = '1';
     imageViewer.style.display = 'none';
     imageViewer.style.flexDirection = 'column';
@@ -938,19 +1010,19 @@
     imageViewer.style.justifyContent = 'center';
     imageViewer.style.padding = '10px';
 
-    notepadInput.addEventListener('input', function(e) {
+    notepadInput.addEventListener('input', function(e) { 
         const tab = notepadTabs.find(function(t) {
             return t.id === activeTabId;
-        });
-        if (tab !== undefined && tab.type === 'text') {
-            tab.text = e.target.value;
-            GM_setValue('notepad_tabs', notepadTabs);
-
-            // Sync with dashboard if open
+        }); 
+        if (tab !== undefined && tab.type === 'text') { 
+            tab.text = e.target.value; 
+            GM_setValue('notepad_tabs', notepadTabs); 
+            pushToDesktop(); // Sync update
+            
             if (isDashboardOpen === true) {
                 renderLiveDashboard();
             }
-        }
+        } 
     });
 
     notepadWrapper.appendChild(notepadHeader);
@@ -960,7 +1032,7 @@
     makeDraggable(notepadHeader, notepadWrapper);
 
     // ==========================================
-    // 10. UI CONSTRUCTION: MAIN WIDGET
+    // 11. UI CONSTRUCTION: MAIN WIDGET
     // ==========================================
 
     mainWidget.style.position = 'fixed';
@@ -994,7 +1066,7 @@
         mainWidget.style.resize = 'both';
     }
 
-    const header = document.createElement('div');
+    const header = document.createElement('div'); 
     header.style.display = 'flex';
     header.style.justifyContent = 'space-between';
     header.style.alignItems = 'center';
@@ -1005,41 +1077,40 @@
     header.style.userSelect = 'none';
     header.style.flexShrink = '0';
 
-    const titleElement = document.createElement('strong');
-    titleElement.textContent = settings.widgetTitle;
+    const titleElement = document.createElement('strong'); 
+    titleElement.textContent = settings.widgetTitle; 
     header.appendChild(titleElement);
 
     const headerControls = document.createElement('div');
-
+    
     // Ordered strictly: Gear, Page, Magnet, Reset, Minimize
-
-    const settingsBtn = document.createElement('button');
-    settingsBtn.textContent = '⚙️';
+    const settingsBtn = document.createElement('button'); 
+    settingsBtn.textContent = '⚙️'; 
     settingsBtn.title = 'Settings';
-
-    const noteToggleBtn = document.createElement('button');
-    noteToggleBtn.textContent = '📝';
-    noteToggleBtn.title = 'Toggle Scratchpad';
+    
+    const noteToggleBtn = document.createElement('button'); 
+    noteToggleBtn.textContent = '📝'; 
+    noteToggleBtn.title = 'Toggle Scratchpad'; 
     if (isNotepadOpen === true) {
         noteToggleBtn.style.opacity = '1';
     } else {
         noteToggleBtn.style.opacity = '0.4';
     }
 
-    const magnetBtn = document.createElement('button');
-    magnetBtn.textContent = '🧲';
-    magnetBtn.title = 'Couple Windows';
+    const magnetBtn = document.createElement('button'); 
+    magnetBtn.textContent = '🧲'; 
+    magnetBtn.title = 'Couple Windows'; 
     if (isCoupled === true) {
         magnetBtn.style.opacity = '1';
     } else {
         magnetBtn.style.opacity = '0.4';
     }
-
-    const resetBtn = document.createElement('button');
-    resetBtn.textContent = '🔄';
+    
+    const resetBtn = document.createElement('button'); 
+    resetBtn.textContent = '🔄'; 
     resetBtn.title = 'Reset to Default Config';
-
-    const toggleBtn = document.createElement('button');
+    
+    const toggleBtn = document.createElement('button'); 
     toggleBtn.id = 'gcs-toggle-btn';
     if (isMinimized === true) {
         toggleBtn.textContent = '+';
@@ -1047,36 +1118,36 @@
         toggleBtn.textContent = '−';
     }
     toggleBtn.title = 'Toggle Size';
-
+    
     const controlButtons = [settingsBtn, noteToggleBtn, magnetBtn, resetBtn, toggleBtn];
-
+    
     controlButtons.forEach(function(btn) {
         btn.style.cursor = 'pointer';
         btn.style.background = 'none';
         btn.style.border = 'none';
-        btn.style.marginLeft = '4px';
+        btn.style.marginLeft = '4px'; 
         btn.style.fontSize = '14px';
         btn.style.padding = '2px';
     });
-
+    
     if (isMinimized === true) {
         settingsBtn.style.display = 'none';
         noteToggleBtn.style.display = 'none';
         magnetBtn.style.display = 'none';
         resetBtn.style.display = 'none';
     }
-
+    
     headerControls.appendChild(settingsBtn);
     headerControls.appendChild(noteToggleBtn);
     headerControls.appendChild(magnetBtn);
     headerControls.appendChild(resetBtn);
     headerControls.appendChild(toggleBtn);
-
-    header.appendChild(headerControls);
+    
+    header.appendChild(headerControls); 
     mainWidget.appendChild(header);
 
     // ==========================================
-    // 11. SETTINGS PANEL
+    // 12. SETTINGS PANEL
     // ==========================================
 
     const settingsPanel = document.createElement('div');
@@ -1093,18 +1164,18 @@
 
     mainWidget.appendChild(settingsPanel);
 
-    function createRow(labelTxt, el) {
-        const row = document.createElement('div');
+    function createRow(labelTxt, el) { 
+        const row = document.createElement('div'); 
         row.style.display = 'flex';
         row.style.justifyContent = 'space-between';
         row.style.alignItems = 'center';
-
-        const lbl = document.createElement('span');
-        lbl.textContent = labelTxt;
-
+        
+        const lbl = document.createElement('span'); 
+        lbl.textContent = labelTxt; 
+        
         row.appendChild(lbl);
-        row.appendChild(el);
-        return row;
+        row.appendChild(el); 
+        return row; 
     }
 
     const titleInput = document.createElement('input');
@@ -1118,148 +1189,158 @@
             settings.widgetTitle = 'Saved Items';
         }
         GM_setValue('gcs_settings', settings);
+        pushToDesktop(); // Sync update
         titleElement.textContent = settings.widgetTitle;
     });
 
-    const hotkeyInput = document.createElement('input');
-    hotkeyInput.type = 'text';
-    hotkeyInput.value = settings.hotkey;
-    hotkeyInput.maxLength = 1;
-    hotkeyInput.style.width = '30px';
+    const hotkeyInput = document.createElement('input'); 
+    hotkeyInput.type = 'text'; 
+    hotkeyInput.value = settings.hotkey; 
+    hotkeyInput.maxLength = 1; 
+    hotkeyInput.style.width = '30px'; 
     hotkeyInput.style.textAlign = 'center';
-    hotkeyInput.addEventListener('change', function(e) {
+    hotkeyInput.addEventListener('change', function(e) { 
         if (e.target.value !== '') {
             settings.hotkey = e.target.value;
         } else {
             settings.hotkey = '`';
         }
-        GM_setValue('gcs_settings', settings);
+        GM_setValue('gcs_settings', settings); 
+        pushToDesktop(); // Sync update
     });
-
-    const fsInput = document.createElement('input');
-    fsInput.type = 'number';
-    fsInput.min = 10;
-    fsInput.max = 30;
-    fsInput.value = parseInt(settings.fontSize, 10);
+    
+    const fsInput = document.createElement('input'); 
+    fsInput.type = 'number'; 
+    fsInput.min = 10; 
+    fsInput.max = 30; 
+    fsInput.value = parseInt(settings.fontSize, 10); 
     fsInput.style.width = '40px';
-    fsInput.addEventListener('change', function(e) {
-        settings.fontSize = e.target.value + 'px';
-        GM_setValue('gcs_settings', settings);
-        styleBlock.textContent = styleBlock.textContent.replace(/--gcs-font-size: \d+px;/g, `--gcs-font-size: ${settings.fontSize};`);
+    fsInput.addEventListener('change', function(e) { 
+        settings.fontSize = e.target.value + 'px'; 
+        GM_setValue('gcs_settings', settings); 
+        pushToDesktop(); // Sync update
+        styleBlock.textContent = styleBlock.textContent.replace(/--gcs-font-size: \d+px;/g, `--gcs-font-size: ${settings.fontSize};`); 
     });
-
-    const keepInput = document.createElement('select');
+    
+    const keepInput = document.createElement('select'); 
     const keepValues = [5, 10, 20, 50];
-    keepValues.forEach(function(v) {
-        const o = document.createElement('option');
-        o.value = v;
-        o.textContent = v;
+    keepValues.forEach(function(v) { 
+        const o = document.createElement('option'); 
+        o.value = v; 
+        o.textContent = v; 
         if (v === settings.maxItems) {
-            o.selected = true;
+            o.selected = true; 
         }
-        keepInput.appendChild(o);
+        keepInput.appendChild(o); 
     });
-    keepInput.addEventListener('change', function(e) {
-        settings.maxItems = parseInt(e.target.value, 10);
-        GM_setValue('gcs_settings', settings);
-        if (savedItems.length > settings.maxItems) {
-            savedItems = savedItems.slice(0, settings.maxItems);
-            GM_setValue('saved_clicks', savedItems);
-            renderList();
-        }
+    keepInput.addEventListener('change', function(e) { 
+        settings.maxItems = parseInt(e.target.value, 10); 
+        GM_setValue('gcs_settings', settings); 
+        if (savedItems.length > settings.maxItems) { 
+            savedItems = savedItems.slice(0, settings.maxItems); 
+            GM_setValue('saved_clicks', savedItems); 
+            renderList(); 
+        } 
+        pushToDesktop(); // Sync update
     });
-
-    const collapseCb = document.createElement('input');
-    collapseCb.type = 'checkbox';
+    
+    const collapseCb = document.createElement('input'); 
+    collapseCb.type = 'checkbox'; 
     collapseCb.checked = settings.autoCollapse;
-    collapseCb.addEventListener('change', function(e) {
-        settings.autoCollapse = e.target.checked;
-        GM_setValue('gcs_settings', settings);
+    collapseCb.addEventListener('change', function(e) { 
+        settings.autoCollapse = e.target.checked; 
+        GM_setValue('gcs_settings', settings); 
+        pushToDesktop(); // Sync update
     });
 
-    const askClearCb = document.createElement('input');
-    askClearCb.type = 'checkbox';
+    const askClearCb = document.createElement('input'); 
+    askClearCb.type = 'checkbox'; 
     askClearCb.checked = settings.askBeforeClear;
-    askClearCb.addEventListener('change', function(e) {
-        settings.askBeforeClear = e.target.checked;
-        GM_setValue('gcs_settings', settings);
+    askClearCb.addEventListener('change', function(e) { 
+        settings.askBeforeClear = e.target.checked; 
+        GM_setValue('gcs_settings', settings); 
+        pushToDesktop(); // Sync update
     });
-
-    const darkModeCb = document.createElement('input');
-    darkModeCb.type = 'checkbox';
+    
+    const darkModeCb = document.createElement('input'); 
+    darkModeCb.type = 'checkbox'; 
     darkModeCb.checked = isDarkMode;
-    darkModeCb.addEventListener('change', function(e) {
-        isDarkMode = !isDarkMode;
-        GM_setValue('is_dark_mode', isDarkMode);
+    darkModeCb.addEventListener('change', function(e) { 
+        isDarkMode = !isDarkMode; 
+        GM_setValue('is_dark_mode', isDarkMode); 
         if (isDarkMode === true) {
             document.documentElement.classList.add('gcs-dark-mode');
         } else {
             document.documentElement.classList.remove('gcs-dark-mode');
         }
-        darkModeCb.checked = isDarkMode;
-
-        // Update Live Dashboard theme if it is open
+        darkModeCb.checked = isDarkMode; 
+        
+        // Pass theme changes up to the desktop object
+        settings.isDarkMode = isDarkMode;
+        GM_setValue('gcs_settings', settings);
+        pushToDesktop();
+        
         if (isDashboardOpen === true) {
             renderLiveDashboard();
         }
     });
-
-    function createSizeGroup(wInp, hInp) {
-        const wrap = document.createElement('div');
-        wrap.style.display = 'flex';
-        wrap.style.gap = '4px';
-        wrap.style.alignItems = 'center';
-        const wL = document.createElement('span');
-        wL.textContent = 'W:';
-        const hL = document.createElement('span');
-        hL.textContent = 'H:';
+    
+    function createSizeGroup(wInp, hInp) { 
+        const wrap = document.createElement('div'); 
+        wrap.style.display = 'flex'; 
+        wrap.style.gap = '4px'; 
+        wrap.style.alignItems = 'center'; 
+        const wL = document.createElement('span'); 
+        wL.textContent = 'W:'; 
+        const hL = document.createElement('span'); 
+        hL.textContent = 'H:'; 
         wrap.appendChild(wL);
         wrap.appendChild(wInp);
         wrap.appendChild(hL);
-        wrap.appendChild(hInp);
-        return wrap;
+        wrap.appendChild(hInp); 
+        return wrap; 
     }
 
-    mainWInput = document.createElement('input');
-    mainWInput.type = 'number';
-    mainWInput.style.width = '45px';
+    mainWInput = document.createElement('input'); 
+    mainWInput.type = 'number'; 
+    mainWInput.style.width = '45px'; 
     mainWInput.value = parseInt(mainSize.width);
-
-    mainHInput = document.createElement('input');
-    mainHInput.type = 'number';
-    mainHInput.style.width = '45px';
+    
+    mainHInput = document.createElement('input'); 
+    mainHInput.type = 'number'; 
+    mainHInput.style.width = '45px'; 
     mainHInput.value = parseInt(mainSize.height);
-
-    mainWInput.addEventListener('change', function(e) {
-        mainWidget.style.width = e.target.value + 'px';
-        savePosSize();
+    
+    mainWInput.addEventListener('change', function(e) { 
+        mainWidget.style.width = e.target.value + 'px'; 
+        savePosSize(); 
     });
-    mainHInput.addEventListener('change', function(e) {
-        mainWidget.style.height = e.target.value + 'px';
-        savePosSize();
+    mainHInput.addEventListener('change', function(e) { 
+        mainWidget.style.height = e.target.value + 'px'; 
+        savePosSize(); 
     });
-
-    noteWInput = document.createElement('input');
-    noteWInput.type = 'number';
-    noteWInput.style.width = '45px';
+    
+    noteWInput = document.createElement('input'); 
+    noteWInput.type = 'number'; 
+    noteWInput.style.width = '45px'; 
     noteWInput.value = parseInt(noteSize.width);
-
-    noteHInput = document.createElement('input');
-    noteHInput.type = 'number';
-    noteHInput.style.width = '45px';
+    
+    noteHInput = document.createElement('input'); 
+    noteHInput.type = 'number'; 
+    noteHInput.style.width = '45px'; 
     noteHInput.value = parseInt(noteSize.height);
-
-    noteWInput.addEventListener('change', function(e) {
-        notepadWrapper.style.width = e.target.value + 'px';
-        savePosSize();
+    
+    noteWInput.addEventListener('change', function(e) { 
+        notepadWrapper.style.width = e.target.value + 'px'; 
+        savePosSize(); 
     });
-    noteHInput.addEventListener('change', function(e) {
-        notepadWrapper.style.height = e.target.value + 'px';
-        savePosSize();
+    noteHInput.addEventListener('change', function(e) { 
+        notepadWrapper.style.height = e.target.value + 'px'; 
+        savePosSize(); 
     });
 
-    const defaultsBtn = document.createElement('button');
-    defaultsBtn.textContent = 'Save Current Layout as Default';
+    const defaultsBtn = document.createElement('button'); 
+    defaultsBtn.textContent = 'Save Current Layout as Default'; 
     defaultsBtn.style.cursor = 'pointer';
     defaultsBtn.style.padding = '4px 8px';
     defaultsBtn.style.marginTop = '6px';
@@ -1269,73 +1350,73 @@
     defaultsBtn.style.color = 'var(--gcs-btn-text)';
     defaultsBtn.style.borderRadius = '4px';
 
-    defaultsBtn.addEventListener('click', function() {
-        const layoutConfig = {
-            mainPos: { left: mainWidget.style.left, top: mainWidget.style.top },
-            notePos: { left: notepadWrapper.style.left, top: notepadWrapper.style.top },
-            mainSize: GM_getValue('main_size'),
-            noteSize: GM_getValue('note_size'),
-            fontSize: settings.fontSize,
-            darkMode: isDarkMode
+    defaultsBtn.addEventListener('click', function() { 
+        const layoutConfig = { 
+            mainPos: { left: mainWidget.style.left, top: mainWidget.style.top }, 
+            notePos: { left: notepadWrapper.style.left, top: notepadWrapper.style.top }, 
+            mainSize: GM_getValue('main_size'), 
+            noteSize: GM_getValue('note_size'), 
+            fontSize: settings.fontSize, 
+            darkMode: isDarkMode 
         };
-        GM_setValue('default_gcs_config', layoutConfig);
-        defaultsBtn.textContent = 'Configuration Saved!';
+        GM_setValue('default_gcs_config', layoutConfig); 
+        defaultsBtn.textContent = 'Configuration Saved!'; 
         setTimeout(function() {
             defaultsBtn.textContent = 'Save Current Layout as Default';
-        }, 1500);
+        }, 1500); 
     });
-
+    
     // Tools Row
-    const toolsRow1 = document.createElement('div');
+    const toolsRow1 = document.createElement('div'); 
     toolsRow1.style.display = 'flex';
     toolsRow1.style.justifyContent = 'space-around';
     toolsRow1.style.gap = '4px';
     toolsRow1.style.marginTop = '4px';
 
-    const toolsRow2 = document.createElement('div');
+    const toolsRow2 = document.createElement('div'); 
     toolsRow2.style.display = 'flex';
     toolsRow2.style.justifyContent = 'space-around';
     toolsRow2.style.gap = '4px';
     toolsRow2.style.marginTop = '4px';
 
-    const backupBtn = document.createElement('button');
-    backupBtn.textContent = '💾 Backup';
+    const backupBtn = document.createElement('button'); 
+    backupBtn.textContent = '💾 Backup'; 
     backupBtn.style.cursor = 'pointer';
     backupBtn.style.padding = '4px';
     backupBtn.style.flexGrow = '1';
     backupBtn.style.borderRadius = '4px';
     backupBtn.style.border = '1px solid var(--gcs-border)';
-
-    backupBtn.addEventListener('click', function() {
-        const a = document.createElement('a');
+    
+    backupBtn.addEventListener('click', function() { 
+        const a = document.createElement('a'); 
         const dataStr = JSON.stringify({ savedItems: savedItems, notepadTabs: notepadTabs, settings: settings });
-        a.href = 'data:text/json;charset=utf-8,' + encodeURIComponent(dataStr);
-        a.download = 'gcs_backup.json';
-        a.click();
+        a.href = 'data:text/json;charset=utf-8,' + encodeURIComponent(dataStr); 
+        a.download = 'gcs_backup.json'; 
+        a.click(); 
     });
 
-    const restoreBtn = document.createElement('button');
-    restoreBtn.textContent = '📂 Import';
+    const restoreBtn = document.createElement('button'); 
+    restoreBtn.textContent = '📂 Import'; 
     restoreBtn.style.cursor = 'pointer';
     restoreBtn.style.padding = '4px';
     restoreBtn.style.flexGrow = '1';
     restoreBtn.style.borderRadius = '4px';
     restoreBtn.style.border = '1px solid var(--gcs-border)';
-
-    const rf = document.createElement('input');
-    rf.type = 'file';
-    rf.accept = '.json';
-    rf.style.display = 'none';
-
+    
+    const rf = document.createElement('input'); 
+    rf.type = 'file'; 
+    rf.accept = '.json'; 
+    rf.style.display = 'none'; 
+    
     restoreBtn.addEventListener('click', function() {
         rf.click();
     });
-
-    rf.addEventListener('change', function(e) {
-        const reader = new FileReader();
-        reader.addEventListener('load', function(event) {
-            try {
-                const data = JSON.parse(event.target.result);
+    
+    rf.addEventListener('change', function(e) { 
+        const reader = new FileReader(); 
+        reader.addEventListener('load', function(event) { 
+            try { 
+                const data = JSON.parse(event.target.result); 
                 if (data.savedItems !== undefined) {
                     savedItems = data.savedItems;
                 }
@@ -1345,22 +1426,24 @@
                 if (data.settings !== undefined) {
                     settings = data.settings;
                 }
-
-                GM_setValue('saved_clicks', savedItems);
-                GM_setValue('notepad_tabs', notepadTabs);
-                GM_setValue('gcs_settings', settings);
-
-                alert('Import success, reloading...');
-                location.reload();
-            } catch (err) {
-                alert('Invalid file format.');
-            }
-        });
-        reader.readAsText(e.target.files[0]);
+                
+                GM_setValue('saved_clicks', savedItems); 
+                GM_setValue('notepad_tabs', notepadTabs); 
+                GM_setValue('gcs_settings', settings); 
+                
+                pushToDesktop(); // Sync update
+                
+                alert('Import success, reloading...'); 
+                location.reload(); 
+            } catch (err) { 
+                alert('Invalid file format.'); 
+            } 
+        }); 
+        reader.readAsText(e.target.files[0]); 
     });
 
-    const staticWebBtn = document.createElement('button');
-    staticWebBtn.textContent = '🌐 Static Export';
+    const staticWebBtn = document.createElement('button'); 
+    staticWebBtn.textContent = '🌐 Static Export'; 
     staticWebBtn.style.cursor = 'pointer';
     staticWebBtn.style.padding = '4px';
     staticWebBtn.style.flexGrow = '1';
@@ -1368,8 +1451,8 @@
     staticWebBtn.style.border = '1px solid var(--gcs-border)';
     staticWebBtn.addEventListener('click', generateStaticDashboard);
 
-    const liveWebBtn = document.createElement('button');
-    liveWebBtn.textContent = '🖥️ Live Dashboard';
+    const liveWebBtn = document.createElement('button'); 
+    liveWebBtn.textContent = '🖥️ Live Dashboard'; 
     liveWebBtn.style.cursor = 'pointer';
     liveWebBtn.style.padding = '4px';
     liveWebBtn.style.flexGrow = '1';
@@ -1382,11 +1465,11 @@
         dashboardOverlay.style.display = 'block';
         renderLiveDashboard();
     });
-
+    
     toolsRow1.appendChild(backupBtn);
     toolsRow1.appendChild(restoreBtn);
     toolsRow1.appendChild(rf);
-
+    
     toolsRow2.appendChild(staticWebBtn);
     toolsRow2.appendChild(liveWebBtn);
 
@@ -1404,7 +1487,7 @@
     settingsPanel.appendChild(toolsRow2);
 
     // ==========================================
-    // 12. LIST ACTION ROW (CLEAR BUTTONS)
+    // 13. LIST ACTION ROW (CLEAR BUTTONS)
     // ==========================================
 
     const listActionsRow = document.createElement('div');
@@ -1436,6 +1519,7 @@
         savedItems = [];
         GM_setValue('saved_clicks', savedItems);
         renderList();
+        pushToDesktop(); // Sync update
     });
 
     const clearNoteBtn = document.createElement('button');
@@ -1454,10 +1538,10 @@
                 return;
             }
         }
-        let activeTab = notepadTabs.find(function(t) {
-            return t.id === activeTabId;
+        let activeTab = notepadTabs.find(function(t) { 
+            return t.id === activeTabId; 
         });
-
+        
         if (activeTab !== undefined) {
             activeTab.text = '';
             if (activeTab.type === 'image') {
@@ -1465,7 +1549,8 @@
             }
             GM_setValue('notepad_tabs', notepadTabs);
             renderTabs();
-
+            pushToDesktop(); // Sync update
+            
             if (isDashboardOpen === true) {
                 renderLiveDashboard();
             }
@@ -1477,7 +1562,7 @@
     mainWidget.appendChild(listActionsRow);
 
     // List Container
-    const listContainer = document.createElement('div');
+    const listContainer = document.createElement('div'); 
     listContainer.className = 'gcs-list-scroll';
     if (isMinimized === true) {
         listContainer.style.display = 'none';
@@ -1487,9 +1572,9 @@
     listContainer.style.padding = '8px';
     listContainer.style.overflowY = 'auto';
     listContainer.style.flexGrow = '1';
-
+    
     mainWidget.appendChild(listContainer);
-
+    
     document.body.appendChild(notepadWrapper);
     document.body.appendChild(mainWidget);
     document.body.appendChild(dashboardOverlay);
@@ -1499,7 +1584,7 @@
     setTimeout(function() {
         const rect = mainWidget.getBoundingClientRect();
         const isOffScreen = rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth;
-
+        
         if (isOffScreen === true) {
             mainWidget.style.left = defaultMainPos.left;
             mainWidget.style.top = defaultMainPos.top;
@@ -1510,7 +1595,7 @@
     }, 500);
 
     // ==========================================
-    // 13. DRAG AND DROP TABS LOGIC
+    // 14. DRAG AND DROP TABS LOGIC
     // ==========================================
 
     function handleTabDragStart(e, tabId) {
@@ -1526,20 +1611,21 @@
 
     function handleTabDrop(e, targetTabId) {
         e.preventDefault();
-
+        
         if (draggedTabId !== null && draggedTabId !== targetTabId) {
             const draggedIndex = notepadTabs.findIndex(function(t) { return t.id === draggedTabId; });
             const targetIndex = notepadTabs.findIndex(function(t) { return t.id === targetTabId; });
-
+            
             if (draggedIndex !== -1 && targetIndex !== -1) {
                 // Remove the dragged tab from the array
                 const tabToMove = notepadTabs.splice(draggedIndex, 1)[0];
                 // Insert it at the new target position
                 notepadTabs.splice(targetIndex, 0, tabToMove);
-
+                
                 GM_setValue('notepad_tabs', notepadTabs);
                 renderTabs();
-
+                pushToDesktop(); // Sync update
+                
                 if (isDashboardOpen === true) {
                     renderLiveDashboard();
                 }
@@ -1553,40 +1639,41 @@
     }
 
     // ==========================================
-    // 14. LIVE OVERLAY DASHBOARD LOGIC
+    // 15. LIVE OVERLAY DASHBOARD LOGIC
     // ==========================================
 
     function renderLiveDashboard() {
         // Prevent scroll on the main website body while dashboard is open
         document.body.style.overflow = 'hidden';
-
+        
         dashboardOverlay.innerHTML = '';
-
+        
         const headerRow = document.createElement('div');
         headerRow.className = 'gcs-dash-header';
-
+        
         const titleSpan = document.createElement('h1');
         titleSpan.textContent = settings.widgetTitle + ' - Live Dashboard';
-
+        
         const rightControls = document.createElement('div');
-
+        
         const addDashBtn = document.createElement('button');
         addDashBtn.className = 'gcs-dash-btn';
         addDashBtn.textContent = '+ Add Note';
         addDashBtn.addEventListener('click', function() {
-            const newId = Date.now();
-            notepadTabs.push({
-                id: newId,
-                title: `Note ${notepadTabs.length + 1}`,
-                text: '',
-                type: 'text',
-                color: '',
-                textColor: ''
-            });
-            activeTabId = newId;
-            GM_setValue('notepad_tabs', notepadTabs);
-            GM_setValue('active_tab_id', activeTabId);
-            renderTabs();
+            const newId = Date.now(); 
+            notepadTabs.push({ 
+                id: newId, 
+                title: `Note ${notepadTabs.length + 1}`, 
+                text: '', 
+                type: 'text', 
+                color: '', 
+                textColor: '' 
+            }); 
+            activeTabId = newId; 
+            GM_setValue('notepad_tabs', notepadTabs); 
+            GM_setValue('active_tab_id', activeTabId); 
+            renderTabs(); 
+            pushToDesktop(); // Sync update
             renderLiveDashboard();
         });
 
@@ -1603,6 +1690,7 @@
             savedItems = [];
             GM_setValue('saved_clicks', savedItems);
             renderList();
+            pushToDesktop(); // Sync update
         });
 
         const dashClearNotesBtn = document.createElement('button');
@@ -1623,9 +1711,10 @@
             });
             GM_setValue('notepad_tabs', notepadTabs);
             renderTabs();
+            pushToDesktop(); // Sync update
             renderLiveDashboard();
         });
-
+        
         const closeDashBtn = document.createElement('button');
         closeDashBtn.className = 'gcs-dash-btn gcs-dash-btn-close';
         closeDashBtn.textContent = '✖ Close Dashboard';
@@ -1635,53 +1724,53 @@
             dashboardOverlay.style.display = 'none';
             document.body.style.overflow = ''; // Restore website scroll
         });
-
+        
         rightControls.appendChild(addDashBtn);
         rightControls.appendChild(dashClearItemsBtn);
         rightControls.appendChild(dashClearNotesBtn);
         rightControls.appendChild(closeDashBtn);
-
+        
         headerRow.appendChild(titleSpan);
         headerRow.appendChild(rightControls);
         dashboardOverlay.appendChild(headerRow);
-
+        
         const grid = document.createElement('div');
         grid.className = 'gcs-dash-grid';
-
+        
         notepadTabs.forEach(function(t, i) {
             const card = document.createElement('div');
             card.className = 'gcs-dash-card';
-
+            
             let bgColor = t.color;
             if (bgColor === '') {
                 bgColor = (isDarkMode === true) ? '#3b3721' : '#fffbe6';
             }
             card.style.backgroundColor = bgColor;
-
+            
             let txtColor = t.textColor;
             if (txtColor === '') {
                 txtColor = (isDarkMode === true) ? '#e0e0e0' : '#333';
             }
             card.style.color = txtColor;
-
+            
             const cardHeader = document.createElement('div');
             cardHeader.className = 'gcs-dash-card-header';
-
+            
             // Allow dropping onto the header of the card for reordering
             cardHeader.addEventListener('dragover', handleTabDragOver);
             cardHeader.addEventListener('drop', function(e) {
                 handleTabDrop(e, t.id);
             });
-
+            
             const cardTitle = document.createElement('div');
             cardTitle.className = 'gcs-dash-card-title';
-
+            
             let icon = '📝 ';
             if (t.type === 'image') {
                 icon = '🖼️ ';
             }
             cardTitle.textContent = icon + t.title;
-
+            
             // ONLY the title is draggable in the dashboard now
             cardTitle.draggable = true;
             cardTitle.style.cursor = 'grab';
@@ -1689,66 +1778,68 @@
                 handleTabDragStart(e, t.id);
             });
             cardTitle.addEventListener('dragend', handleTabDragEnd);
-
+            
             const cardControls = document.createElement('div');
-
-            const bgBtn = document.createElement('span');
-            bgBtn.textContent = '🎨';
-            bgBtn.title = 'Background Color';
+            
+            const bgBtn = document.createElement('span'); 
+            bgBtn.textContent = '🎨'; 
+            bgBtn.title = 'Background Color'; 
             bgBtn.style.cursor = 'pointer';
             bgBtn.style.marginLeft = '6px';
             bgBtn.style.fontSize = '12px';
-
-            const bgInput = document.createElement('input');
-            bgInput.type = 'color';
-            bgInput.style.display = 'none';
+            
+            const bgInput = document.createElement('input'); 
+            bgInput.type = 'color'; 
+            bgInput.style.display = 'none'; 
             bgInput.value = bgColor;
-
-            bgInput.addEventListener('change', function(e) {
-                t.color = e.target.value;
-                GM_setValue('notepad_tabs', notepadTabs);
-                renderTabs();
+            
+            bgInput.addEventListener('change', function(e) { 
+                t.color = e.target.value; 
+                GM_setValue('notepad_tabs', notepadTabs); 
+                renderTabs(); 
+                pushToDesktop(); // Sync update
                 renderLiveDashboard();
             });
-            bgBtn.addEventListener('click', function(e) {
-                e.stopPropagation();
-                bgInput.click();
+            bgBtn.addEventListener('click', function(e) { 
+                e.stopPropagation(); 
+                bgInput.click(); 
             });
 
-            const txtBtn = document.createElement('span');
-            txtBtn.textContent = '🅰️';
-            txtBtn.title = 'Text Color';
+            const txtBtn = document.createElement('span'); 
+            txtBtn.textContent = '🅰️'; 
+            txtBtn.title = 'Text Color'; 
             txtBtn.style.cursor = 'pointer';
             txtBtn.style.marginLeft = '6px';
             txtBtn.style.fontSize = '12px';
-
-            const txtInput = document.createElement('input');
-            txtInput.type = 'color';
-            txtInput.style.display = 'none';
+            
+            const txtInput = document.createElement('input'); 
+            txtInput.type = 'color'; 
+            txtInput.style.display = 'none'; 
             txtInput.value = txtColor;
-
-            txtInput.addEventListener('change', function(e) {
-                t.textColor = e.target.value;
-                GM_setValue('notepad_tabs', notepadTabs);
-                renderTabs();
+            
+            txtInput.addEventListener('change', function(e) { 
+                t.textColor = e.target.value; 
+                GM_setValue('notepad_tabs', notepadTabs); 
+                renderTabs(); 
+                pushToDesktop(); // Sync update
                 renderLiveDashboard();
             });
-            txtBtn.addEventListener('click', function(e) {
-                e.stopPropagation();
-                txtInput.click();
+            txtBtn.addEventListener('click', function(e) { 
+                e.stopPropagation(); 
+                txtInput.click(); 
             });
-
+            
             cardControls.appendChild(bgBtn);
             cardControls.appendChild(bgInput);
             cardControls.appendChild(txtBtn);
             cardControls.appendChild(txtInput);
-
+            
             cardHeader.appendChild(cardTitle);
             cardHeader.appendChild(cardControls);
-
+            
             const cardBody = document.createElement('div');
             cardBody.className = 'gcs-dash-card-body';
-
+            
             if (t.type === 'image') {
                 const imgContainer = document.createElement('div');
                 imgContainer.className = 'gcs-dash-image-container';
@@ -1762,31 +1853,32 @@
                 ta.className = 'gcs-dash-textarea';
                 ta.style.color = txtColor;
                 ta.value = t.text;
-
+                
                 // Live sync text back to the main widget
                 ta.addEventListener('input', function(e) {
                     t.text = e.target.value;
                     GM_setValue('notepad_tabs', notepadTabs);
                     renderTabs();
+                    pushToDesktop(); // Sync update
                 });
                 cardBody.appendChild(ta);
             }
-
+            
             card.appendChild(cardHeader);
             card.appendChild(cardBody);
             grid.appendChild(card);
         });
-
+        
         dashboardOverlay.appendChild(grid);
     }
 
     // ==========================================
-    // 15. STATIC DASHBOARD GENERATION
+    // 16. STATIC DASHBOARD GENERATION
     // ==========================================
 
     function generateStaticDashboard() {
         let noteHtmlString = '';
-
+        
         notepadTabs.forEach(function(t, i) {
             let bgColor = '#fffbe6';
             if (t.color !== '') {
@@ -1806,7 +1898,7 @@
             if (t.type === 'image') {
                 icon = '🖼️';
             }
-
+            
             let contentHtml = '';
             if (t.type === 'image') {
                 contentHtml = `<img src="${t.text}" style="max-width:100%;max-height:100%;">`;
@@ -1841,93 +1933,93 @@
                     <meta charset="utf-8">
                     <title>${settings.widgetTitle} - Export</title>
                     <style>
-                        body {
-                            font-family: Arial;
-                            background: ${bgBodyColor};
-                            color: ${txtBodyColor};
-                            padding: 20px;
-                        }
-                        .grid {
-                            display: flex;
-                            flex-wrap: wrap;
-                            gap: 20px;
-                        }
-                        .note {
-                            resize: both;
-                            overflow: hidden;
-                            min-width: 200px;
-                            min-height: 200px;
-                            padding: 10px;
-                            border-radius: 8px;
-                            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-                            position: relative;
-                            cursor: pointer;
-                            transition: transform 0.1s;
-                            border: 1px solid ${borderBodyColor};
-                        }
-                        .note:hover {
-                            transform: scale(1.02);
-                        }
-                        .note h3 {
-                            margin: 0 0 10px 0;
-                            font-size: 14px;
-                            border-bottom: 1px solid rgba(0,0,0,0.1);
-                            padding-bottom: 5px;
+                        body { 
+                            font-family: Arial; 
+                            background: ${bgBodyColor}; 
+                            color: ${txtBodyColor}; 
+                            padding: 20px; 
+                        } 
+                        .grid { 
+                            display: flex; 
+                            flex-wrap: wrap; 
+                            gap: 20px; 
+                        } 
+                        .note { 
+                            resize: both; 
+                            overflow: hidden; 
+                            min-width: 200px; 
+                            min-height: 200px; 
+                            padding: 10px; 
+                            border-radius: 8px; 
+                            box-shadow: 0 4px 8px rgba(0,0,0,0.3); 
+                            position: relative; 
+                            cursor: pointer; 
+                            transition: transform 0.1s; 
+                            border: 1px solid ${borderBodyColor}; 
+                        } 
+                        .note:hover { 
+                            transform: scale(1.02); 
+                        } 
+                        .note h3 { 
+                            margin: 0 0 10px 0; 
+                            font-size: 14px; 
+                            border-bottom: 1px solid rgba(0,0,0,0.1); 
+                            padding-bottom: 5px; 
                             pointer-events: none;
-                        }
-                        .note-content {
-                            white-space: pre-wrap;
-                            font-size: 13px;
-                            height: calc(100% - 30px);
-                            overflow: hidden;
-                            pointer-events: none;
-                        }
-                        #overlay {
-                            display: none;
-                            position: fixed;
-                            top: 0;
-                            left: 0;
-                            width: 100%;
-                            height: 100%;
-                            background: rgba(0,0,0,0.7);
-                            z-index: 1000;
-                            justify-content: center;
-                            align-items: center;
-                        }
-                        .modal {
-                            background: ${modalBgColor};
-                            width: 80%;
-                            max-width: 800px;
-                            max-height: 80vh;
-                            padding: 20px;
-                            border-radius: 8px;
-                            display: flex;
-                            flex-direction: column;
-                        }
-                        .modal-header {
-                            display: flex;
-                            justify-content: space-between;
-                            margin-bottom: 15px;
-                        }
-                        .modal-body {
-                            overflow-y: auto;
-                            flex-grow: 1;
-                            padding: 10px;
-                            border: 1px solid #ccc;
-                            border-radius: 4px;
-                            white-space: pre-wrap;
-                        }
-                        button {
-                            cursor: pointer;
-                            padding: 8px 16px;
-                            margin-left: 10px;
-                            border: none;
-                            border-radius: 4px;
-                            background: #007bff;
-                            color: white;
-                        }
-                        button.close {
-                            background: #dc3545;
+                        } 
+                        .note-content { 
+                            white-space: pre-wrap; 
+                            font-size: 13px; 
+                            height: calc(100% - 30px); 
+                            overflow: hidden; 
+                            pointer-events: none; 
+                        } 
+                        #overlay { 
+                            display: none; 
+                            position: fixed; 
+                            top: 0; 
+                            left: 0; 
+                            width: 100%; 
+                            height: 100%; 
+                            background: rgba(0,0,0,0.7); 
+                            z-index: 1000; 
+                            justify-content: center; 
+                            align-items: center; 
+                        } 
+                        .modal { 
+                            background: ${modalBgColor}; 
+                            width: 80%; 
+                            max-width: 800px; 
+                            max-height: 80vh; 
+                            padding: 20px; 
+                            border-radius: 8px; 
+                            display: flex; 
+                            flex-direction: column; 
+                        } 
+                        .modal-header { 
+                            display: flex; 
+                            justify-content: space-between; 
+                            margin-bottom: 15px; 
+                        } 
+                        .modal-body { 
+                            overflow-y: auto; 
+                            flex-grow: 1; 
+                            padding: 10px; 
+                            border: 1px solid #ccc; 
+                            border-radius: 4px; 
+                            white-space: pre-wrap; 
+                        } 
+                        button { 
+                            cursor: pointer; 
+                            padding: 8px 16px; 
+                            margin-left: 10px; 
+                            border: none; 
+                            border-radius: 4px; 
+                            background: #007bff; 
+                            color: white; 
+                        } 
+                        button.close { 
+                            background: #dc3545; 
                         }
                     </style>
                 </head>
@@ -1948,68 +2040,68 @@
                         </div>
                     </div>
                     <script>
-                        const tabs = ${JSON.stringify(notepadTabs)};
-                        let activeIdx = 0;
-
-                        function openModal(idx) {
-                            activeIdx = idx;
-                            const t = tabs[idx];
-                            document.getElementById('m-title').textContent = t.title;
-
-                            const body = document.getElementById('m-body');
-
+                        const tabs = ${JSON.stringify(notepadTabs)}; 
+                        let activeIdx = 0; 
+                        
+                        function openModal(idx) { 
+                            activeIdx = idx; 
+                            const t = tabs[idx]; 
+                            document.getElementById('m-title').textContent = t.title; 
+                            
+                            const body = document.getElementById('m-body'); 
+                            
                             if (t.color !== '') {
                                 body.style.backgroundColor = t.color;
                             } else {
                                 body.style.backgroundColor = '';
                             }
-
+                            
                             if (t.textColor !== '') {
                                 body.style.color = t.textColor;
                             } else {
                                 body.style.color = '';
                             }
-
+                            
                             if (t.type === 'image') {
                                 body.innerHTML = '<img src="' + t.text + '" style="max-width:100%;">';
                             } else {
                                 body.innerHTML = t.text.replace(/</g,'&lt;');
                             }
-
-                            document.getElementById('overlay').style.display = 'flex';
-                        }
-
-                        function closeModal() {
-                            document.getElementById('overlay').style.display = 'none';
-                        }
-
-                        function copyContent() {
-                            const t = tabs[activeIdx];
+                            
+                            document.getElementById('overlay').style.display = 'flex'; 
+                        } 
+                        
+                        function closeModal() { 
+                            document.getElementById('overlay').style.display = 'none'; 
+                        } 
+                        
+                        function copyContent() { 
+                            const t = tabs[activeIdx]; 
                             if (t.type === 'image') {
                                 fetch(t.text)
                                     .then(function(r) { return r.blob(); })
-                                    .then(function(b) {
+                                    .then(function(b) { 
                                         const item = new ClipboardItem({[b.type]: b});
-                                        return navigator.clipboard.write([item]);
+                                        return navigator.clipboard.write([item]); 
                                     })
                                     .then(function() { alert('Copied!'); })
-                                    .catch(function() { alert('CORS Error. Image cross-origin blocked by browser.'); });
+                                    .catch(function() { alert('CORS Error. Image cross-origin blocked by browser.'); }); 
                             } else {
                                 navigator.clipboard.writeText(t.text)
-                                    .then(function() { alert('Copied!'); });
+                                    .then(function() { alert('Copied!'); }); 
                             }
                         }
                     </script>
                 </body>
             </html>
         `;
-
+        
         const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
         window.open(URL.createObjectURL(blob), '_blank');
     }
 
     // ==========================================
-    // 16. RENDERING LOGIC (TABS)
+    // 17. RENDERING LOGIC (TABS)
     // ==========================================
 
     function renameTab(titleSpan, tabId) {
@@ -2017,94 +2109,95 @@
             return;
         }
         const currentTitle = titleSpan.textContent.replace(/^[📝🖼️]\s*/, '');
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.value = currentTitle;
+        const input = document.createElement('input'); 
+        input.type = 'text'; 
+        input.value = currentTitle; 
         input.style.fontSize = '11px';
         input.style.width = '80px';
         input.style.padding = '1px 3px';
-
-        const group = document.createElement('div');
-        group.className = 'gcs-tab-edit-group';
+        
+        const group = document.createElement('div'); 
+        group.className = 'gcs-tab-edit-group'; 
         group.style.display = 'flex';
         group.style.alignItems = 'center';
-
-        titleSpan.style.display = 'none';
-        titleSpan.parentNode.insertBefore(group, titleSpan);
-        group.appendChild(input);
+        
+        titleSpan.style.display = 'none'; 
+        titleSpan.parentNode.insertBefore(group, titleSpan); 
+        group.appendChild(input); 
         input.focus();
 
-        const commitChange = function() {
+        const commitChange = function() { 
             let newTitle = input.value.trim();
             if (newTitle === '') {
                 newTitle = 'Untitled';
             }
-
+            
             const foundTab = notepadTabs.find(function(t) {
                 return t.id === tabId;
             });
             if (foundTab !== undefined) {
-                foundTab.title = newTitle;
+                foundTab.title = newTitle; 
             }
-            GM_setValue('notepad_tabs', notepadTabs);
-
-            group.remove();
-            titleSpan.style.display = 'inline';
-
+            GM_setValue('notepad_tabs', notepadTabs); 
+            pushToDesktop(); // Sync update
+            
+            group.remove(); 
+            titleSpan.style.display = 'inline'; 
+            
             let iconPrefix = '📝 ';
             if (titleSpan.parentNode.getAttribute('data-type') === 'image') {
                 iconPrefix = '🖼️ ';
             }
-            titleSpan.textContent = iconPrefix + newTitle;
-            titleSpan.title = "Double-click to rename. Drag to reorder.";
-            renderTabs();
-
+            titleSpan.textContent = iconPrefix + newTitle; 
+            titleSpan.title = "Double-click to rename"; 
+            renderTabs(); 
+            
             if (isDashboardOpen === true) {
                 renderLiveDashboard();
             }
         };
-
-        input.addEventListener('keydown', function(e) {
+        
+        input.addEventListener('keydown', function(e) { 
             if (e.key === 'Enter') {
-                commitChange();
+                commitChange(); 
             }
-            if (e.key === 'Escape') {
-                group.remove();
-                titleSpan.style.display = 'inline';
-            }
+            if (e.key === 'Escape') { 
+                group.remove(); 
+                titleSpan.style.display = 'inline'; 
+            } 
         });
         input.addEventListener('blur', commitChange);
     }
 
     function renderTabs() {
-        tabBar.innerHTML = '';
+        tabBar.innerHTML = ''; 
         let activeTab = notepadTabs.find(function(t) {
             return t.id === activeTabId;
         });
-
+        
         if (activeTab === undefined) {
             activeTab = notepadTabs[0];
         }
-
+        
         if (activeTab.color !== '') {
             notepadWrapper.style.backgroundColor = activeTab.color;
         } else {
             notepadWrapper.style.backgroundColor = 'var(--gcs-note-bg)';
         }
-
+        
         if (activeTab.textColor !== '') {
             notepadInput.style.color = activeTab.textColor;
         } else {
             notepadInput.style.color = 'var(--gcs-note-text)';
         }
-
-        if (activeTab.type === 'image') {
-            notepadInput.style.display = 'none';
-            imageViewer.style.display = 'flex';
-            imageViewer.innerHTML = `<img src="${activeTab.text}" style="max-width:100%;max-height:80%;object-fit:contain;margin-bottom:12px;border-radius:4px;">`;
-
-            const cp = document.createElement('button');
-            cp.textContent = 'Copy Image';
+        
+        if (activeTab.type === 'image') { 
+            notepadInput.style.display = 'none'; 
+            imageViewer.style.display = 'flex'; 
+            imageViewer.innerHTML = `<img src="${activeTab.text}" style="max-width:100%;max-height:80%;object-fit:contain;margin-bottom:12px;border-radius:4px;">`; 
+            
+            const cp = document.createElement('button'); 
+            cp.textContent = 'Copy Image'; 
             cp.style.cursor = 'pointer';
             cp.style.padding = '6px 12px';
             cp.style.border = '1px solid var(--gcs-btn-border)';
@@ -2112,37 +2205,37 @@
             cp.style.borderRadius = '4px';
             cp.style.fontSize = '12px';
             cp.style.color = 'var(--gcs-btn-text)';
-
-            cp.addEventListener('click', function() {
-                copyImageToClipboard(activeTab.text);
-                const oldText = cp.textContent;
-                cp.textContent = 'Copied!';
-                cp.style.backgroundColor = 'var(--gcs-success-bg)';
-                cp.style.color = 'var(--gcs-btn-text)';
-                setTimeout(function() {
-                    cp.textContent = oldText;
-                    cp.style.backgroundColor = 'var(--gcs-btn-bg)';
-                }, 1000);
-            });
-            imageViewer.appendChild(cp);
-        } else {
-            notepadInput.style.display = 'block';
-            imageViewer.style.display = 'none';
-            notepadInput.value = activeTab.text;
+            
+            cp.addEventListener('click', function() { 
+                copyImageToClipboard(activeTab.text); 
+                const oldText = cp.textContent; 
+                cp.textContent = 'Copied!'; 
+                cp.style.backgroundColor = 'var(--gcs-success-bg)'; 
+                cp.style.color = 'var(--gcs-btn-text)'; 
+                setTimeout(function() { 
+                    cp.textContent = oldText; 
+                    cp.style.backgroundColor = 'var(--gcs-btn-bg)'; 
+                }, 1000); 
+            }); 
+            imageViewer.appendChild(cp); 
+        } else { 
+            notepadInput.style.display = 'block'; 
+            imageViewer.style.display = 'none'; 
+            notepadInput.value = activeTab.text; 
         }
-
-        notepadTabs.forEach(function(t) {
-            const isActive = (t.id === activeTabId);
-            const tab = document.createElement('div');
-            tab.className = 'gcs-tab';
-            tab.setAttribute('data-type', t.type);
-
+        
+        notepadTabs.forEach(function(t) { 
+            const isActive = (t.id === activeTabId); 
+            const tab = document.createElement('div'); 
+            tab.className = 'gcs-tab'; 
+            tab.setAttribute('data-type', t.type); 
+            
             // Allow tabs to accept drops
             tab.addEventListener('dragover', handleTabDragOver);
             tab.addEventListener('drop', function(e) {
                 handleTabDrop(e, t.id);
             });
-
+            
             let bgColor = 'rgba(0,0,0,0.05)';
             if (isActive === true) {
                 if (t.color !== '') {
@@ -2151,64 +2244,64 @@
                     bgColor = 'var(--gcs-note-bg)';
                 }
             }
-
+            
             tab.style.display = 'flex';
             tab.style.alignItems = 'center';
             tab.style.padding = '4px 8px';
             tab.style.backgroundColor = bgColor;
             tab.style.borderRight = '1px solid var(--gcs-note-border)';
             tab.style.userSelect = 'none';
-            tab.style.cursor = 'default';
-
+            tab.style.cursor = 'default'; 
+            
             if (isActive === true) {
                 tab.style.opacity = '1';
                 tab.style.fontWeight = 'bold';
             } else {
                 tab.style.opacity = '0.7';
                 tab.style.fontWeight = 'normal';
-
+                
                 // Allow non-active tabs to be clicked to activate
-                tab.addEventListener('click', function() {
-                    activeTabId = t.id;
-                    GM_setValue('active_tab_id', activeTabId);
-                    renderTabs();
-                });
+                tab.addEventListener('click', function() { 
+                    activeTabId = t.id; 
+                    GM_setValue('active_tab_id', activeTabId); 
+                    renderTabs(); 
+                }); 
             }
-
-            const ts = document.createElement('span');
-            ts.className = 'gcs-tab-title';
-
+            
+            const ts = document.createElement('span'); 
+            ts.className = 'gcs-tab-title'; 
+            
             // ONLY the title is draggable in the scratchpad now
             ts.draggable = true;
-            ts.style.cursor = 'grab';
+            ts.style.cursor = 'grab'; 
             ts.addEventListener('dragstart', function(e) {
                 handleTabDragStart(e, t.id);
             });
             ts.addEventListener('dragend', handleTabDragEnd);
-
+            
             let iconPrefix = '📝 ';
             if (t.type === 'image') {
                 iconPrefix = '🖼️ ';
             }
-            ts.textContent = iconPrefix + t.title;
-            ts.title = "Double-click to rename. Drag to reorder.";
-
-            ts.addEventListener('dblclick', function() {
-                renameTab(ts, t.id);
+            ts.textContent = iconPrefix + t.title; 
+            ts.title = "Double-click to rename. Drag to reorder."; 
+            
+            ts.addEventListener('dblclick', function() { 
+                renameTab(ts, t.id); 
             });
-
-            if (isActive === true) {
-                const bgBtn = document.createElement('span');
-                bgBtn.textContent = '🎨';
-                bgBtn.title = 'Background Color';
+            
+            if (isActive === true) { 
+                const bgBtn = document.createElement('span'); 
+                bgBtn.textContent = '🎨'; 
+                bgBtn.title = 'Background Color'; 
                 bgBtn.style.cursor = 'pointer';
                 bgBtn.style.marginLeft = '6px';
                 bgBtn.style.fontSize = '11px';
-
-                const bgInput = document.createElement('input');
-                bgInput.type = 'color';
-                bgInput.style.display = 'none';
-
+                
+                const bgInput = document.createElement('input'); 
+                bgInput.type = 'color'; 
+                bgInput.style.display = 'none'; 
+                
                 if (t.color !== '') {
                     bgInput.value = t.color;
                 } else if (isDarkMode === true) {
@@ -2216,29 +2309,30 @@
                 } else {
                     bgInput.value = '#fffbe6';
                 }
-
-                bgInput.addEventListener('change', function(e) {
-                    t.color = e.target.value;
-                    GM_setValue('notepad_tabs', notepadTabs);
-                    renderTabs();
+                
+                bgInput.addEventListener('change', function(e) { 
+                    t.color = e.target.value; 
+                    GM_setValue('notepad_tabs', notepadTabs); 
+                    renderTabs(); 
+                    pushToDesktop(); // Sync update
                     if (isDashboardOpen === true) renderLiveDashboard();
                 });
-                bgBtn.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    bgInput.click();
+                bgBtn.addEventListener('click', function(e) { 
+                    e.stopPropagation(); 
+                    bgInput.click(); 
                 });
 
-                const txtBtn = document.createElement('span');
-                txtBtn.textContent = '🅰️';
-                txtBtn.title = 'Text Color';
+                const txtBtn = document.createElement('span'); 
+                txtBtn.textContent = '🅰️'; 
+                txtBtn.title = 'Text Color'; 
                 txtBtn.style.cursor = 'pointer';
                 txtBtn.style.marginLeft = '4px';
                 txtBtn.style.fontSize = '11px';
-
-                const txtInput = document.createElement('input');
-                txtInput.type = 'color';
-                txtInput.style.display = 'none';
-
+                
+                const txtInput = document.createElement('input'); 
+                txtInput.type = 'color'; 
+                txtInput.style.display = 'none'; 
+                
                 if (t.textColor !== '') {
                     txtInput.value = t.textColor;
                 } else if (isDarkMode === true) {
@@ -2246,112 +2340,115 @@
                 } else {
                     txtInput.value = '#333333';
                 }
-
-                txtInput.addEventListener('change', function(e) {
-                    t.textColor = e.target.value;
-                    GM_setValue('notepad_tabs', notepadTabs);
-                    renderTabs();
+                
+                txtInput.addEventListener('change', function(e) { 
+                    t.textColor = e.target.value; 
+                    GM_setValue('notepad_tabs', notepadTabs); 
+                    renderTabs(); 
+                    pushToDesktop(); // Sync update
                     if (isDashboardOpen === true) renderLiveDashboard();
                 });
-                txtBtn.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    txtInput.click();
+                txtBtn.addEventListener('click', function(e) { 
+                    e.stopPropagation(); 
+                    txtInput.click(); 
                 });
 
-                tab.appendChild(ts);
-                tab.appendChild(bgBtn);
-                tab.appendChild(bgInput);
-                tab.appendChild(txtBtn);
+                tab.appendChild(ts); 
+                tab.appendChild(bgBtn); 
+                tab.appendChild(bgInput); 
+                tab.appendChild(txtBtn); 
                 tab.appendChild(txtInput);
-
-                if (notepadTabs.length > 1) {
-                    const del = document.createElement('span');
-                    del.textContent = '✖';
-                    del.title = "Delete tab";
+                
+                if (notepadTabs.length > 1) { 
+                    const del = document.createElement('span'); 
+                    del.textContent = '✖'; 
+                    del.title = "Delete tab"; 
                     del.style.marginLeft = '6px';
                     del.style.fontSize = '9px';
                     del.style.cursor = 'pointer';
                     del.style.color = '#ff4444';
-
-                    del.addEventListener('click', function(e) {
-                        e.stopPropagation();
-                        if (confirm(`Delete "${t.title}"?`) === true) {
+                    
+                    del.addEventListener('click', function(e) { 
+                        e.stopPropagation(); 
+                        if (confirm(`Delete "${t.title}"?`) === true) { 
                             notepadTabs = notepadTabs.filter(function(x) {
                                 return x.id !== t.id;
-                            });
-                            activeTabId = notepadTabs[0].id;
-                            GM_setValue('notepad_tabs', notepadTabs);
-                            GM_setValue('active_tab_id', activeTabId);
-                            renderTabs();
+                            }); 
+                            activeTabId = notepadTabs[0].id; 
+                            GM_setValue('notepad_tabs', notepadTabs); 
+                            GM_setValue('active_tab_id', activeTabId); 
+                            renderTabs(); 
+                            pushToDesktop(); // Sync update
                             if (isDashboardOpen === true) renderLiveDashboard();
-                        }
-                    });
-                    tab.appendChild(del);
+                        } 
+                    }); 
+                    tab.appendChild(del); 
                 }
-            } else {
-                tab.appendChild(ts);
-            }
-            tabBar.appendChild(tab);
+            } else { 
+                tab.appendChild(ts); 
+            } 
+            tabBar.appendChild(tab); 
         });
-
-        const add = document.createElement('div');
-        add.textContent = '+';
-        add.title = "Add tab";
+        
+        const add = document.createElement('div'); 
+        add.textContent = '+'; 
+        add.title = "Add tab"; 
         add.style.padding = '4px 8px';
         add.style.cursor = 'pointer';
         add.style.color = 'var(--gcs-note-text)';
         add.style.fontSize = '12px';
         add.style.fontWeight = 'bold';
-
-        add.addEventListener('click', function() {
-            const newId = Date.now();
-            notepadTabs.push({
-                id: newId,
-                title: `Note ${notepadTabs.length + 1}`,
-                text: '',
-                type: 'text',
-                color: '',
-                textColor: ''
-            });
-            activeTabId = newId;
-            GM_setValue('notepad_tabs', notepadTabs);
-            GM_setValue('active_tab_id', activeTabId);
-            renderTabs();
-            setTimeout(function() {
-                tabBar.scrollLeft = tabBar.scrollWidth;
-            }, 10);
+        
+        add.addEventListener('click', function() { 
+            const newId = Date.now(); 
+            notepadTabs.push({ 
+                id: newId, 
+                title: `Note ${notepadTabs.length + 1}`, 
+                text: '', 
+                type: 'text', 
+                color: '', 
+                textColor: '' 
+            }); 
+            activeTabId = newId; 
+            GM_setValue('notepad_tabs', notepadTabs); 
+            GM_setValue('active_tab_id', activeTabId); 
+            renderTabs(); 
+            pushToDesktop(); // Sync update
+            setTimeout(function() { 
+                tabBar.scrollLeft = tabBar.scrollWidth; 
+            }, 10); 
             if (isDashboardOpen === true) renderLiveDashboard();
-        });
+        }); 
         tabBar.appendChild(add);
     }
 
     // ==========================================
-    // 17. RENDERING LOGIC (LIST)
+    // 18. RENDERING LOGIC (LIST)
     // ==========================================
 
     function renderList() {
         listContainer.innerHTML = '';
-
-        if (savedItems.length === 0) {
-            listContainer.innerHTML = `<div style="padding: 10px; color: var(--gcs-text); text-align: center; opacity: 0.6;">No items saved.<br>Hold ${settings.hotkey} and click text or images.</div>`;
-            return;
+        
+        if (savedItems.length === 0) { 
+            listContainer.innerHTML = `<div style="padding: 10px; color: var(--gcs-text); text-align: center; opacity: 0.6;">No items saved.<br>Hold ${settings.hotkey} and click text or images.</div>`; 
+            return; 
         }
-
-        savedItems.forEach(function(item, index) {
-            const row = document.createElement('div');
+        
+        savedItems.forEach(function(item, index) { 
+            const row = document.createElement('div'); 
             let bottomBorder = 'none';
             if (index < savedItems.length - 1) {
                 bottomBorder = '1px solid var(--gcs-row-border)';
             }
-
+            
             row.style.display = 'flex';
             row.style.justifyContent = 'space-between';
             row.style.alignItems = 'center';
             row.style.padding = '6px 0';
             row.style.borderBottom = bottomBorder;
 
-            const cs = document.createElement('span');
-            cs.className = 'cs';
+            const cs = document.createElement('span'); 
+            cs.className = 'cs'; 
             cs.style.whiteSpace = 'nowrap';
             cs.style.overflow = 'hidden';
             cs.style.textOverflow = 'ellipsis';
@@ -2362,21 +2459,21 @@
             cs.style.display = 'flex';
             cs.style.alignItems = 'center';
 
-            if (item.type === 'image') {
-                const th = document.createElement('img');
-                th.src = item.text;
+            if (item.type === 'image') { 
+                const th = document.createElement('img'); 
+                th.src = item.text; 
                 th.style.height = '20px';
                 th.style.width = '20px';
                 th.style.objectFit = 'cover';
                 th.style.borderRadius = '3px';
                 th.style.marginRight = '6px';
                 th.style.border = '1px solid var(--gcs-border)';
-
-                cs.appendChild(th);
-                cs.appendChild(document.createTextNode(' Image Captured'));
+                
+                cs.appendChild(th); 
+                cs.appendChild(document.createTextNode(' Image Captured')); 
                 cs.title = item.text;
-            } else {
-                const words = item.text.split(/\s+/);
+            } else { 
+                const words = item.text.split(/\s+/); 
                 if (words.length > 3) {
                     cs.textContent = words.slice(0, 3).join(' ') + '...';
                 } else {
@@ -2385,13 +2482,13 @@
                 cs.title = item.text;
             }
 
-            const bg = document.createElement('div');
+            const bg = document.createElement('div'); 
             bg.style.display = 'flex';
             bg.style.alignItems = 'center';
 
-            const pb = document.createElement('button');
-            pb.textContent = '←';
-            pb.title = 'Push to Scratchpad';
+            const pb = document.createElement('button'); 
+            pb.textContent = '←'; 
+            pb.title = 'Push to Scratchpad'; 
             pb.style.cursor = 'pointer';
             pb.style.padding = '4px 6px';
             pb.style.border = 'none';
@@ -2400,42 +2497,42 @@
             pb.style.fontWeight = 'bold';
             pb.style.color = 'var(--gcs-text)';
             pb.style.marginRight = '4px';
-
-            pb.addEventListener('mouseover', function() {
-                pb.style.backgroundColor = 'var(--gcs-btn-bg)';
+            
+            pb.addEventListener('mouseover', function() { 
+                pb.style.backgroundColor = 'var(--gcs-btn-bg)'; 
+            }); 
+            pb.addEventListener('mouseout', function() { 
+                pb.style.backgroundColor = 'transparent'; 
             });
-            pb.addEventListener('mouseout', function() {
-                pb.style.backgroundColor = 'transparent';
-            });
-
+            
             pb.addEventListener('click', function() {
-                if (item.type === 'image') {
-                    const newId = Date.now();
-                    notepadTabs.push({
-                        id: newId,
-                        title: `Image Note`,
-                        text: item.text,
-                        type: 'image',
-                        color: '',
-                        textColor: ''
-                    });
+                if (item.type === 'image') { 
+                    const newId = Date.now(); 
+                    notepadTabs.push({ 
+                        id: newId, 
+                        title: `Image Note`, 
+                        text: item.text, 
+                        type: 'image', 
+                        color: '', 
+                        textColor: '' 
+                    }); 
                     activeTabId = newId;
                 } else {
                     let active = notepadTabs.find(function(t) {
                         return t.id === activeTabId;
-                    });
-                    if (active !== undefined && active.type === 'image') {
-                        const newId = Date.now();
-                        active = {
-                            id: newId,
-                            title: `Note ${notepadTabs.length + 1}`,
-                            text: '',
-                            type: 'text',
-                            color: '',
-                            textColor: ''
-                        };
-                        notepadTabs.push(active);
-                        activeTabId = active.id;
+                    }); 
+                    if (active !== undefined && active.type === 'image') { 
+                        const newId = Date.now(); 
+                        active = { 
+                            id: newId, 
+                            title: `Note ${notepadTabs.length + 1}`, 
+                            text: '', 
+                            type: 'text', 
+                            color: '', 
+                            textColor: '' 
+                        }; 
+                        notepadTabs.push(active); 
+                        activeTabId = active.id; 
                     }
                     if (active !== undefined) {
                         let prefix = '';
@@ -2444,219 +2541,222 @@
                         }
                         active.text = active.text + prefix + item.text;
                     }
-                }
-                GM_setValue('notepad_tabs', notepadTabs);
-                GM_setValue('active_tab_id', activeTabId);
-
-                isNotepadOpen = true;
-                GM_setValue('is_notepad_open', true);
-                notepadWrapper.style.display = 'flex';
-                noteToggleBtn.style.opacity = '1';
-                renderTabs();
+                } 
+                GM_setValue('notepad_tabs', notepadTabs); 
+                GM_setValue('active_tab_id', activeTabId); 
+                
+                isNotepadOpen = true; 
+                GM_setValue('is_notepad_open', true); 
+                notepadWrapper.style.display = 'flex'; 
+                noteToggleBtn.style.opacity = '1'; 
+                renderTabs(); 
+                pushToDesktop(); // Sync update
+                
                 if (isDashboardOpen === true) renderLiveDashboard();
-
-                const oc = pb.style.color;
-                pb.style.color = '#4CAF50';
-                setTimeout(function() {
-                    pb.style.color = oc;
+                
+                const oc = pb.style.color; 
+                pb.style.color = '#4CAF50'; 
+                setTimeout(function() { 
+                    pb.style.color = oc; 
                 }, 500);
             });
 
-            const cb = document.createElement('button');
-            cb.textContent = 'Copy';
+            const cb = document.createElement('button'); 
+            cb.textContent = 'Copy'; 
             cb.style.cursor = 'pointer';
             cb.style.padding = '4px 8px';
             cb.style.border = '1px solid var(--gcs-btn-border)';
             cb.style.backgroundColor = 'var(--gcs-btn-bg)';
             cb.style.borderRadius = '4px';
             cb.style.fontSize = '11px';
-
-            cb.addEventListener('click', function() {
+            
+            cb.addEventListener('click', function() { 
                 if (item.type === 'image') {
-                    copyImageToClipboard(item.text);
+                    copyImageToClipboard(item.text); 
                 } else {
                     GM_setClipboard(item.text, 'text');
                 }
-                const ot = cb.textContent;
-                cb.textContent = 'Copied!';
-                cb.style.backgroundColor = 'var(--gcs-success-bg)';
-                cb.style.borderColor = 'var(--gcs-success-border)';
-
-                setTimeout(function() {
-                    cb.textContent = ot;
-                    cb.style.backgroundColor = 'var(--gcs-btn-bg)';
-                    cb.style.borderColor = 'var(--gcs-btn-border)';
+                const ot = cb.textContent; 
+                cb.textContent = 'Copied!'; 
+                cb.style.backgroundColor = 'var(--gcs-success-bg)'; 
+                cb.style.borderColor = 'var(--gcs-success-border)'; 
+                
+                setTimeout(function() { 
+                    cb.textContent = ot; 
+                    cb.style.backgroundColor = 'var(--gcs-btn-bg)'; 
+                    cb.style.borderColor = 'var(--gcs-btn-border)'; 
                 }, 1000);
             });
 
-            const del = document.createElement('button');
-            del.textContent = '✖';
-            del.title = 'Delete item';
+            const del = document.createElement('button'); 
+            del.textContent = '✖'; 
+            del.title = 'Delete item'; 
             del.style.cursor = 'pointer';
             del.style.padding = '4px 6px';
             del.style.border = 'none';
             del.style.background = 'transparent';
             del.style.color = '#ff6b6b';
             del.style.marginLeft = '4px';
-
-            del.addEventListener('click', function() {
-                savedItems.splice(index, 1);
-                GM_setValue('saved_clicks', savedItems);
-                renderList();
+            
+            del.addEventListener('click', function() { 
+                savedItems.splice(index, 1); 
+                GM_setValue('saved_clicks', savedItems); 
+                renderList(); 
+                pushToDesktop(); // Sync update
             });
-
-            bg.appendChild(pb);
-            bg.appendChild(cb);
-            bg.appendChild(del);
-
-            row.appendChild(cs);
-            row.appendChild(bg);
-
-            listContainer.appendChild(row);
+            
+            bg.appendChild(pb); 
+            bg.appendChild(cb); 
+            bg.appendChild(del); 
+            
+            row.appendChild(cs); 
+            row.appendChild(bg); 
+            
+            listContainer.appendChild(row); 
         });
     }
 
     // ==========================================
-    // 18. ACTION BUTTON EVENTS
+    // 19. ACTION BUTTON EVENTS
     // ==========================================
 
-    settingsBtn.addEventListener('click', function() {
-        isSettingsOpen = !isSettingsOpen;
+    settingsBtn.addEventListener('click', function() { 
+        isSettingsOpen = !isSettingsOpen; 
         if (isSettingsOpen === true && isMinimized === false) {
             settingsPanel.style.display = 'flex';
         } else {
             settingsPanel.style.display = 'none';
         }
-
+        
         if (isSettingsOpen === true) {
             settingsBtn.style.opacity = '1';
         } else {
             settingsBtn.style.opacity = '0.5';
         }
     });
-
-    noteToggleBtn.addEventListener('click', function() {
-        isNotepadOpen = !isNotepadOpen;
-        GM_setValue('is_notepad_open', isNotepadOpen);
-
+    
+    noteToggleBtn.addEventListener('click', function() { 
+        isNotepadOpen = !isNotepadOpen; 
+        GM_setValue('is_notepad_open', isNotepadOpen); 
+        
         if (isNotepadOpen === true && isMinimized === false) {
             notepadWrapper.style.display = 'flex';
         } else {
             notepadWrapper.style.display = 'none';
         }
-
+        
         if (isNotepadOpen === true) {
             noteToggleBtn.style.opacity = '1';
         } else {
             noteToggleBtn.style.opacity = '0.4';
         }
     });
-
-    magnetBtn.addEventListener('click', function() {
-        isCoupled = !isCoupled;
-        GM_setValue('is_coupled', isCoupled);
-
+    
+    magnetBtn.addEventListener('click', function() { 
+        isCoupled = !isCoupled; 
+        GM_setValue('is_coupled', isCoupled); 
+        
         if (isCoupled === true) {
             magnetBtn.style.opacity = '1';
         } else {
             magnetBtn.style.opacity = '0.4';
         }
     });
-
-    resetBtn.addEventListener('click', function() {
-        resetBtn.style.transform = 'rotate(180deg)';
-        setTimeout(function() {
-            resetBtn.style.transform = 'rotate(0deg)';
+    
+    resetBtn.addEventListener('click', function() { 
+        resetBtn.style.transform = 'rotate(180deg)'; 
+        setTimeout(function() { 
+            resetBtn.style.transform = 'rotate(0deg)'; 
         }, 300);
-
+        
         const cfg = GM_getValue('default_gcs_config');
-
-        if (cfg !== undefined && cfg.mainSize !== undefined && cfg.mainSize.width !== undefined) {
-            mainWidget.style.left = cfg.mainPos.left;
+        
+        if (cfg !== undefined && cfg.mainSize !== undefined && cfg.mainSize.width !== undefined) { 
+            mainWidget.style.left = cfg.mainPos.left; 
             mainWidget.style.top = cfg.mainPos.top;
-            mainWidget.style.right = 'auto';
+            mainWidget.style.right = 'auto'; 
             mainWidget.style.bottom = 'auto';
-            mainWidget.style.width = cfg.mainSize.width;
-
+            mainWidget.style.width = cfg.mainSize.width; 
+            
             if (isMinimized === true) {
                 mainWidget.style.height = 'auto';
             } else {
                 mainWidget.style.height = cfg.mainSize.height;
             }
-
-            notepadWrapper.style.left = cfg.notePos.left;
+            
+            notepadWrapper.style.left = cfg.notePos.left; 
             notepadWrapper.style.top = cfg.notePos.top;
-            notepadWrapper.style.right = 'auto';
+            notepadWrapper.style.right = 'auto'; 
             notepadWrapper.style.bottom = 'auto';
-            notepadWrapper.style.width = cfg.noteSize.width;
+            notepadWrapper.style.width = cfg.noteSize.width; 
             notepadWrapper.style.height = cfg.noteSize.height;
-
-            settings.fontSize = cfg.fontSize;
-            GM_setValue('gcs_settings', settings);
+            
+            settings.fontSize = cfg.fontSize; 
+            GM_setValue('gcs_settings', settings); 
             fsInput.value = parseInt(settings.fontSize, 10);
             styleBlock.textContent = styleBlock.textContent.replace(/--gcs-font-size: \d+px;/g, `--gcs-font-size: ${settings.fontSize};`);
-
-            isDarkMode = cfg.darkMode;
-            GM_setValue('is_dark_mode', isDarkMode);
+            
+            isDarkMode = cfg.darkMode; 
+            GM_setValue('is_dark_mode', isDarkMode); 
             if (isDarkMode === true) {
                 document.documentElement.classList.add('gcs-dark-mode');
             } else {
                 document.documentElement.classList.remove('gcs-dark-mode');
             }
             darkModeCb.checked = isDarkMode;
-
-        } else {
-            mainWidget.style.left = 'auto';
-            mainWidget.style.top = 'auto';
-            mainWidget.style.right = defaultMainPos.right;
+            
+        } else { 
+            mainWidget.style.left = 'auto'; 
+            mainWidget.style.top = 'auto'; 
+            mainWidget.style.right = defaultMainPos.right; 
             mainWidget.style.bottom = defaultMainPos.bottom;
-            mainWidget.style.width = defaultMainSize.width;
-
+            mainWidget.style.width = defaultMainSize.width; 
+            
             if (isMinimized === true) {
                 mainWidget.style.height = 'auto';
             } else {
                 mainWidget.style.height = defaultMainSize.height;
             }
-
-            notepadWrapper.style.left = 'auto';
-            notepadWrapper.style.top = 'auto';
-            notepadWrapper.style.right = defaultNotePos.right;
+            
+            notepadWrapper.style.left = 'auto'; 
+            notepadWrapper.style.top = 'auto'; 
+            notepadWrapper.style.right = defaultNotePos.right; 
             notepadWrapper.style.bottom = defaultNotePos.bottom;
-            notepadWrapper.style.width = defaultNoteSize.width;
+            notepadWrapper.style.width = defaultNoteSize.width; 
             notepadWrapper.style.height = defaultNoteSize.height;
-
-            settings.fontSize = '13px';
-            GM_setValue('gcs_settings', settings);
+            
+            settings.fontSize = '13px'; 
+            GM_setValue('gcs_settings', settings); 
             fsInput.value = 13;
             styleBlock.textContent = styleBlock.textContent.replace(/--gcs-font-size: \d+px;/g, `--gcs-font-size: ${settings.fontSize};`);
-
-            isDarkMode = true;
-            GM_setValue('is_dark_mode', isDarkMode);
-            document.documentElement.classList.add('gcs-dark-mode');
+            
+            isDarkMode = true; 
+            GM_setValue('is_dark_mode', isDarkMode); 
+            document.documentElement.classList.add('gcs-dark-mode'); 
             darkModeCb.checked = isDarkMode;
-        }
-
-        isCoupled = true;
-        GM_setValue('is_coupled', true);
-        magnetBtn.style.opacity = '1';
+        } 
+        
+        isCoupled = true; 
+        GM_setValue('is_coupled', true); 
+        magnetBtn.style.opacity = '1'; 
         savePosSize();
     });
 
-    toggleBtn.addEventListener('click', function() {
-        isMinimized = !isMinimized;
+    toggleBtn.addEventListener('click', function() { 
+        isMinimized = !isMinimized; 
         GM_setValue('is_minimized', isMinimized);
-
+        
         if (isMinimized === true) {
-            settingsPanel.style.display = 'none';
-            listContainer.style.display = 'none';
+            settingsPanel.style.display = 'none'; 
+            listContainer.style.display = 'none'; 
             listActionsRow.style.display = 'none';
             toggleBtn.textContent = '+';
-
-            mainWidget.style.height = 'auto';
-            mainWidget.style.minHeight = '0px';
-            mainWidget.style.resize = 'none';
-            notepadWrapper.style.display = 'none';
-
+            
+            mainWidget.style.height = 'auto'; 
+            mainWidget.style.minHeight = '0px'; 
+            mainWidget.style.resize = 'none'; 
+            notepadWrapper.style.display = 'none'; 
+            
             settingsBtn.style.display = 'none';
             noteToggleBtn.style.display = 'none';
             magnetBtn.style.display = 'none';
@@ -2667,19 +2767,19 @@
             } else {
                 settingsPanel.style.display = 'none';
             }
-
-            listContainer.style.display = 'block';
-            listActionsRow.style.display = 'flex';
+            
+            listContainer.style.display = 'block'; 
+            listActionsRow.style.display = 'flex'; 
             toggleBtn.textContent = '−';
-
-            mainWidget.style.height = mainSize.height;
-            mainWidget.style.minHeight = '150px';
-            mainWidget.style.resize = 'both';
-
+            
+            mainWidget.style.height = mainSize.height; 
+            mainWidget.style.minHeight = '150px'; 
+            mainWidget.style.resize = 'both'; 
+            
             if (isNotepadOpen === true) {
-                notepadWrapper.style.display = 'flex';
+                notepadWrapper.style.display = 'flex'; 
             }
-
+            
             settingsBtn.style.display = '';
             noteToggleBtn.style.display = '';
             magnetBtn.style.display = '';
@@ -2688,21 +2788,16 @@
     });
 
     // ==========================================
-    // 19. INITIALIZATION CALLS
+    // 20. INITIALIZATION CALLS
     // ==========================================
 
-    renderList();
+    pullFromDesktop(); // Pull on initial load
+    renderList(); 
     renderTabs();
-
-    // Sync when returning to tab
-    window.addEventListener('focus', function() {
-        renderList();
-        notepadTabs = GM_getValue('notepad_tabs', notepadTabs);
-        activeTabId = GM_getValue('active_tab_id', activeTabId);
-        renderTabs();
-        if (isDashboardOpen === true) {
-            renderLiveDashboard();
-        }
+    
+    // Pull from desktop when user switches back to this browser tab
+    window.addEventListener('focus', function() { 
+        pullFromDesktop();
     });
 
 })();
