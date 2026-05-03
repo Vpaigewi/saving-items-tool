@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver (Desktop Sync Edition)
 // @namespace    http://tampermonkey.net/
-// @version      1.37
+// @version      1.38
 // @description  Hold ` to save. Syncs with Electron App. Tap to capture clipboard, Hold to capture page. Zero Compression.
 // @author       Gemini
 // @match        *://*/*
@@ -360,12 +360,9 @@
     let noteWInput;
     let noteHInput;
 
-    // ==========================================
+// ==========================================
     // 6. DRAG & DROP LOGIC (WINDOWS)
     // ==========================================
-
-    let dragRelGapX = 0;
-    let dragRelGapY = 0;
 
     // Brings the clicked window to the front
     function bringToFront(widget) {
@@ -382,7 +379,9 @@
         let startX = 0;
         let startY = 0;
         let rectDrag = null;
-        let rectOther = null;
+        
+        let otherStartX = 0;
+        let otherStartY = 0;
         
         let otherContainer = null;
         if (draggedContainer === mainWidget) {
@@ -412,15 +411,38 @@
             draggedContainer.style.right = 'auto';
 
             if (isCoupled === true && isNotepadOpen === true) {
-                rectOther = otherContainer.getBoundingClientRect();
-                otherContainer.style.left = rectOther.left + 'px'; 
-                otherContainer.style.top = rectOther.top + 'px';
+                // CRITICAL FIX: If the other container is hidden (minimized), getBoundingClientRect() returns 0!
+                let isOtherHidden = (otherContainer === notepadWrapper && isMinimized === true);
+                
+                if (isOtherHidden === false) {
+                    let rectOther = otherContainer.getBoundingClientRect();
+                    otherStartX = rectOther.left;
+                    otherStartY = rectOther.top;
+                } else {
+                    // If it's hidden, safely extract its coordinates from its inline style memory
+                    let parsedLeft = parseInt(otherContainer.style.left, 10);
+                    let parsedTop = parseInt(otherContainer.style.top, 10);
+                    
+                    if (isNaN(parsedLeft) === false) {
+                        otherStartX = parsedLeft;
+                    } else {
+                        // Fallback: Snap it mathematically to the left of the main widget
+                        let noteW = parseInt(noteSize.width, 10);
+                        if (isNaN(noteW) === true) noteW = 240;
+                        otherStartX = rectDrag.left - noteW - 10;
+                    }
+                    
+                    if (isNaN(parsedTop) === false) {
+                        otherStartY = parsedTop;
+                    } else {
+                        otherStartY = rectDrag.top;
+                    }
+                }
+                
+                otherContainer.style.left = otherStartX + 'px'; 
+                otherContainer.style.top = otherStartY + 'px';
                 otherContainer.style.bottom = 'auto';
                 otherContainer.style.right = 'auto';
-                
-                // Calculate the fixed gap between the two windows
-                dragRelGapX = rectOther.left - rectDrag.left; 
-                dragRelGapY = rectOther.top - rectDrag.top;
             }
             bringToFront(draggedContainer);
         });
@@ -436,8 +458,8 @@
             draggedContainer.style.top = (rectDrag.top + dy) + 'px';
             
             if (isCoupled === true && isNotepadOpen === true) { 
-                otherContainer.style.left = (rectDrag.left + dx + dragRelGapX) + 'px'; 
-                otherContainer.style.top = (rectDrag.top + dy + dragRelGapY) + 'px'; 
+                otherContainer.style.left = (otherStartX + dx) + 'px'; 
+                otherContainer.style.top = (otherStartY + dy) + 'px'; 
             }
         });
 
@@ -481,7 +503,6 @@
         };
         GM_setValue('note_size', noteSize);
     }
-
     // ==========================================
     // 7. LIVE RESIZE OBSERVER (COUPLED SCALING)
     // ==========================================
