@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver
 // @namespace    http://tampermonkey.net/
-// @version      1.33
+// @version      1.34
 // @description  Hold ` to save. Fixed minimized-load bugs, position saving, Zero Compression.
 // @author       Gemini
 // @match        *://*/*
@@ -340,159 +340,150 @@
         GM_setValue('note_size', noteSize);
     }
 
+// ==========================================
+    // 6. DRAG & DROP LOGIC (WINDOWS)
     // ==========================================
-    // 6. LIVE RESIZE OBSERVER (COUPLED SCALING)
-    // ==========================================
 
-    // We use this flag to prevent infinite loops when the script resizes the other window programmatically
-    let isSyncingSize = false;
-
-    // Parse the previous sizes safely to track how many pixels the user dragged
-    let lastMainW = parseInt(mainSize.width, 10);
-    if (isNaN(lastMainW) === true) {
-        lastMainW = 270;
+    // Brings the clicked window to the front
+    function bringToFront(widget) {
+        const allWidgets = document.querySelectorAll('.gcs-floating-widget');
+        allWidgets.forEach(function(w) {
+            w.style.zIndex = '2147483646';
+        });
+        widget.style.zIndex = '2147483647';
     }
 
-    let lastMainH = parseInt(mainSize.height, 10);
-    if (isNaN(lastMainH) === true) {
-        lastMainH = 400;
-    }
-
-    let lastNoteW = parseInt(noteSize.width, 10);
-    if (isNaN(lastNoteW) === true) {
-        lastNoteW = 240;
-    }
-
-    let lastNoteH = parseInt(noteSize.height, 10);
-    if (isNaN(lastNoteH) === true) {
-        lastNoteH = 400;
-    }
-
-    const resizeObserver = new ResizeObserver(function(entries) {
-        // If the script is currently applying a coupled size, ignore this event to prevent infinite loops
-        if (isSyncingSize === true) {
-            return;
+    // Applies drag-and-drop listeners to a header handle
+    function makeDraggable(handle, draggedContainer) {
+        let isDragging = false;
+        let startX = 0;
+        let startY = 0;
+        let rectDrag = null;
+        
+        let otherStartX = 0;
+        let otherStartY = 0;
+        
+        let otherContainer = null;
+        if (draggedContainer === mainWidget) {
+            otherContainer = notepadWrapper;
+        } else {
+            otherContainer = mainWidget;
         }
 
-        let deltaW = 0;
-        let deltaH = 0;
-        let activeTarget = null;
+        handle.addEventListener('mousedown', function(e) {
+            const tag = e.target.tagName.toLowerCase();
+            const isInteractive = ['button', 'input', 'select', 'textarea'].includes(tag);
+            const isScrollbar = e.offsetX > e.target.clientWidth || e.offsetY > e.target.clientHeight;
+            
+            if (isInteractive === true || isScrollbar === true) {
+                return; 
+            }
+            
+            isDragging = true;
+            startX = e.clientX; 
+            startY = e.clientY;
+            
+            // Switch from right/bottom positioning to left/top positioning for dragging
+            rectDrag = draggedContainer.getBoundingClientRect();
+            draggedContainer.style.left = rectDrag.left + 'px'; 
+            draggedContainer.style.top = rectDrag.top + 'px';
+            draggedContainer.style.bottom = 'auto';
+            draggedContainer.style.right = 'auto';
 
-        for (let entry of entries) {
-            // Ignore events where the window is collapsed or hidden
-            if (entry.target.offsetWidth > 50) {
-
-                // If the user resized the MAIN widget...
-                if (entry.target === mainWidget) {
-                    let newW = entry.target.offsetWidth;
-                    let newH = entry.target.offsetHeight;
-
-                    if (newW !== lastMainW || newH !== lastMainH) {
-                        deltaW = newW - lastMainW;
-                        deltaH = newH - lastMainH;
-
-                        lastMainW = newW;
-                        lastMainH = newH;
-
-                        // Update settings menu numbers if it exists
-                        if (mainWInput !== undefined) {
-                            mainWInput.value = newW;
-                            mainHInput.value = newH;
-                        }
-
-                        mainSize = { width: newW + 'px', height: newH + 'px' };
-                        GM_setValue('main_size', mainSize);
-
-                        activeTarget = 'main';
+            if (isCoupled === true && isNotepadOpen === true) {
+                // CRITICAL FIX: If the other container is hidden (minimized), getBoundingClientRect() returns 0!
+                let isOtherHidden = (otherContainer === notepadWrapper && isMinimized === true);
+                
+                if (isOtherHidden === false) {
+                    let rectOther = otherContainer.getBoundingClientRect();
+                    otherStartX = rectOther.left;
+                    otherStartY = rectOther.top;
+                } else {
+                    // If it's hidden, safely extract its coordinates from its inline style memory
+                    let parsedLeft = parseInt(otherContainer.style.left, 10);
+                    let parsedTop = parseInt(otherContainer.style.top, 10);
+                    
+                    if (isNaN(parsedLeft) === false) {
+                        otherStartX = parsedLeft;
+                    } else {
+                        // Fallback: Snap it mathematically to the left of the main widget
+                        let noteW = parseInt(noteSize.width, 10);
+                        if (isNaN(noteW) === true) noteW = 240;
+                        otherStartX = rectDrag.left - noteW - 10;
+                    }
+                    
+                    if (isNaN(parsedTop) === false) {
+                        otherStartY = parsedTop;
+                    } else {
+                        otherStartY = rectDrag.top;
                     }
                 }
-
-                // If the user resized the NOTEPAD widget...
-                else if (entry.target === notepadWrapper) {
-                    let newW = entry.target.offsetWidth;
-                    let newH = entry.target.offsetHeight;
-
-                    if (newW !== lastNoteW || newH !== lastNoteH) {
-                        deltaW = newW - lastNoteW;
-                        deltaH = newH - lastNoteH;
-
-                        lastNoteW = newW;
-                        lastNoteH = newH;
-
-                        // Update settings menu numbers if it exists
-                        if (noteWInput !== undefined) {
-                            noteWInput.value = newW;
-                            noteHInput.value = newH;
-                        }
-
-                        noteSize = { width: newW + 'px', height: newH + 'px' };
-                        GM_setValue('note_size', noteSize);
-
-                        activeTarget = 'note';
-                    }
-                }
+                
+                otherContainer.style.left = otherStartX + 'px'; 
+                otherContainer.style.top = otherStartY + 'px';
+                otherContainer.style.bottom = 'auto';
+                otherContainer.style.right = 'auto';
             }
-        }
+            bringToFront(draggedContainer);
+        });
 
-        // Apply the exact same size change to the OTHER window if they are coupled
-        if (isCoupled === true && isNotepadOpen === true && isMinimized === false && activeTarget !== null) {
-            isSyncingSize = true;
-
-            if (activeTarget === 'main') {
-                // User resized Main, so apply deltas to Notepad
-                lastNoteW = lastNoteW + deltaW;
-                lastNoteH = lastNoteH + deltaH;
-
-                // Enforce CSS minimums so it doesn't break
-                if (lastNoteW < 150) {
-                    lastNoteW = 150;
-                }
-                if (lastNoteH < 150) {
-                    lastNoteH = 150;
-                }
-
-                notepadWrapper.style.width = lastNoteW + 'px';
-                notepadWrapper.style.height = lastNoteH + 'px';
-
-                if (noteWInput !== undefined) {
-                    noteWInput.value = lastNoteW;
-                    noteHInput.value = lastNoteH;
-                }
-
-                noteSize = { width: lastNoteW + 'px', height: lastNoteH + 'px' };
-                GM_setValue('note_size', noteSize);
-
-            } else if (activeTarget === 'note') {
-                // User resized Notepad, so apply deltas to Main Widget
-                lastMainW = lastMainW + deltaW;
-                lastMainH = lastMainH + deltaH;
-
-                // Enforce CSS minimums so it doesn't break
-                if (lastMainW < 200) {
-                    lastMainW = 200;
-                }
-                if (lastMainH < 150) {
-                    lastMainH = 150;
-                }
-
-                mainWidget.style.width = lastMainW + 'px';
-                mainWidget.style.height = lastMainH + 'px';
-
-                if (mainWInput !== undefined) {
-                    mainWInput.value = lastMainW;
-                    mainHInput.value = lastMainH;
-                }
-
-                mainSize = { width: lastMainW + 'px', height: lastMainH + 'px' };
-                GM_setValue('main_size', mainSize);
+        document.addEventListener('mousemove', function(e) {
+            if (isDragging === false) {
+                return;
             }
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            
+            draggedContainer.style.left = (rectDrag.left + dx) + 'px'; 
+            draggedContainer.style.top = (rectDrag.top + dy) + 'px';
+            
+            if (isCoupled === true && isNotepadOpen === true) { 
+                otherContainer.style.left = (otherStartX + dx) + 'px'; 
+                otherContainer.style.top = (otherStartY + dy) + 'px'; 
+            }
+        });
 
-            // Release the lock slightly after the browser repaints
-            setTimeout(function() {
-                isSyncingSize = false;
-            }, 50);
+        document.addEventListener('mouseup', function() { 
+            if (isDragging === true) { 
+                isDragging = false; 
+                savePosSize(); 
+            }
+        });
+    }
+
+    // Saves the current position and size to Tampermonkey storage
+    function savePosSize() {
+        // ALWAYS save the position, regardless of whether it is minimized or expanded
+        mainWidget.style.right = 'auto';
+        mainWidget.style.bottom = 'auto';
+        notepadWrapper.style.right = 'auto';
+        notepadWrapper.style.bottom = 'auto';
+        
+        GM_setValue('main_pos', { 
+            left: mainWidget.style.left, 
+            top: mainWidget.style.top 
+        });
+        GM_setValue('note_pos', { 
+            left: notepadWrapper.style.left, 
+            top: notepadWrapper.style.top 
+        });
+        
+        // ONLY save the sizes if the window is expanded
+        if (isMinimized === false) {
+            mainSize = { 
+                width: mainWidget.style.width, 
+                height: mainWidget.style.height 
+            };
+            GM_setValue('main_size', mainSize);
         }
-    });
+        
+        noteSize = { 
+            width: notepadWrapper.style.width, 
+            height: notepadWrapper.style.height 
+        };
+        GM_setValue('note_size', noteSize);
+    }
+
 
     // ==========================================
     // 7. EVENT INTERCEPTORS & COPY LOGIC
