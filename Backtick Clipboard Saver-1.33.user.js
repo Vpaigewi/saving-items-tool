@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver
 // @namespace    http://tampermonkey.net/
-// @version      1.36
-// @description  Hold ` to save. Pure Web Edition. Expanded Code, Snap Button, Lock Scaling, and Minimized Resize Fix.
+// @version      1.37
+// @description  Hold ` to save. Pure Web Edition. Bottom-anchored minimize, Dark Mode button fixes.
 // @author       Gemini
 // @match        *://*/*
 // @grant        GM_setValue
@@ -478,7 +478,7 @@
             if (entry.target.offsetWidth > 50) { 
                 
                 if (entry.target === mainWidget) {
-                    // --- BUG FIX: DO NOT SAVE COLLAPSED HEIGHT ---
+                    // --- MINIMIZED RESIZE FIX: DO NOT SAVE COLLAPSED HEIGHT ---
                     if (isMinimized === true) {
                         continue;
                     }
@@ -1180,6 +1180,8 @@
         btn.style.marginLeft = '4px';
         btn.style.fontSize = '14px';
         btn.style.padding = '2px';
+        // explicitly bind to theme text color to fix dark mode + & - visibility
+        btn.style.color = 'var(--gcs-text)'; 
     });
 
     if (isMinimized === true) {
@@ -2785,6 +2787,8 @@
     });
 
     toggleBtn.addEventListener('click', function() {
+        const mRectBefore = mainWidget.getBoundingClientRect();
+        
         isMinimized = !isMinimized;
         GM_setValue('is_minimized', isMinimized);
 
@@ -2820,7 +2824,6 @@
 
             if (isNotepadOpen === true) {
                 notepadWrapper.style.display = 'flex';
-                setTimeout(resolveOverlap, 50); // Ensure they snap edge-to-edge if opening causes a collision
             }
 
             settingsBtn.style.display = '';
@@ -2828,6 +2831,29 @@
             magnetBtn.style.display = '';
             resetBtn.style.display = '';
         }
+        
+        // --- NEW: BOTTOM-ANCHORED COLLAPSE MATH ---
+        // We wait a single tick for the browser to render the new height, 
+        // then recalculate the top coordinate so the bottom edge stays completely still!
+        setTimeout(function() {
+            const mRectAfter = mainWidget.getBoundingClientRect();
+            let newTop = mRectBefore.bottom - mRectAfter.height;
+            
+            // Failsafe: Don't push it off the top of the screen if expanded near the top
+            if (newTop < 0) {
+                newTop = 0;
+            }
+            
+            mainWidget.style.top = newTop + 'px';
+            
+            // Also adjust the notepad to keep it perfectly aligned if it's open
+            if (isNotepadOpen === true && isCoupled === true && isMinimized === false) {
+                notepadWrapper.style.top = newTop + 'px';
+            }
+            
+            savePosSize();
+            resolveOverlap(); 
+        }, 10);
     });
 
     // ==========================================
