@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver (Desktop Sync Edition)
 // @namespace    http://tampermonkey.net/
-// @version      1.38
+// @version      1.39
 // @description  Hold ` to save. Syncs with Electron App. Active Overlap Defender and Dynamic Anchoring.
 // @author       Gemini
 // @match        *://*/*
