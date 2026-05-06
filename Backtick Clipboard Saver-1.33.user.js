@@ -2,7 +2,7 @@
 // @name         Backtick Clipboard Saver (Desktop Sync Edition)
 // @namespace    http://tampermonkey.net/
 // @version      1.38
-// @description  Hold ` to save. Syncs with Electron App. Tap to capture clipboard, Hold to capture page. Zero Compression.
+// @description  Hold ` to save. Syncs with Electron App. Active Overlap Defender and Dynamic Anchoring.
 // @author       Gemini
 // @match        *://*/*
 // @grant        GM_setValue
@@ -230,19 +230,14 @@
         setDesktopHotkeyStatus(true);
         pullFromDesktop(); // Also refresh data just in case
     });
+
     // When the browser window loses focus, tell the desktop app to resume the hotkey
     window.addEventListener('blur', function() {
         setDesktopHotkeyStatus(false);
     });
-
-    // --- ADD THIS NEW FAILSAFE ---
+    
     // If the user closes the tab entirely, force the desktop app to resume the hotkey
     window.addEventListener('beforeunload', function() {
-        setDesktopHotkeyStatus(false);
-    });
-
-    // When the browser window loses focus, tell the desktop app to resume the hotkey
-    window.addEventListener('blur', function() {
         setDesktopHotkeyStatus(false);
     });
 
@@ -256,7 +251,6 @@
     // ==========================================
     
     const defaultMainPos = { right: '20px', bottom: '20px', left: 'auto', top: 'auto' };
-    const defaultNotePos = { right: '310px', bottom: '20px', left: 'auto', top: 'auto' };
     const defaultMainSize = { width: '270px', height: '400px' };
     const defaultNoteSize = { width: '240px', height: '400px' };
 
@@ -281,6 +275,12 @@
     let mainSize = sanitizeSize(GM_getValue('main_size', defaultMainSize), defaultMainSize);
     let noteSize = sanitizeSize(GM_getValue('note_size', defaultNoteSize), defaultNoteSize);
 
+    // --- DYNAMIC ANCHOR FIX ---
+    // Mathematically calculate where the notepad should sit so the main widget never eats it
+    let parsedMainW = parseInt(mainSize.width, 10);
+    if (isNaN(parsedMainW) === true) parsedMainW = 270;
+    const dynamicNotePos = { right: (20 + parsedMainW + 15) + 'px', bottom: '20px', left: 'auto', top: 'auto' };
+
     // Safely load Positions and prioritize absolute Left/Top coordinates if they exist
     let rawMainPos = GM_getValue('main_pos', null);
     let mainPos = defaultMainPos;
@@ -289,7 +289,7 @@
     }
 
     let rawNotePos = GM_getValue('note_pos', null);
-    let notePos = defaultNotePos;
+    let notePos = dynamicNotePos;
     if (rawNotePos !== null && rawNotePos.left !== undefined && rawNotePos.left !== 'auto') {
         notePos = { left: rawNotePos.left, top: rawNotePos.top, right: 'auto', bottom: 'auto' };
     }
@@ -314,11 +314,11 @@
             mainWidget.style.width = defaultMainSize.width;
             mainWidget.style.height = defaultMainSize.height;
 
-            // Force notepad widget to factory defaults
+            // Force notepad widget to factory defaults using the dynamic anchor
             notepadWrapper.style.left = 'auto';
             notepadWrapper.style.top = 'auto';
-            notepadWrapper.style.right = defaultNotePos.right;
-            notepadWrapper.style.bottom = defaultNotePos.bottom;
+            notepadWrapper.style.right = dynamicNotePos.right;
+            notepadWrapper.style.bottom = dynamicNotePos.bottom;
             notepadWrapper.style.width = defaultNoteSize.width;
             notepadWrapper.style.height = defaultNoteSize.height;
 
@@ -360,11 +360,13 @@
     let noteWInput;
     let noteHInput;
 
-// ==========================================
-    // 6. DRAG & DROP LOGIC (WINDOWS)
+    // ==========================================
+    // 6. DRAG, DROP & COLLISION LOGIC
     // ==========================================
 
-    // Brings the clicked window to the front
+    let dragRelGapX = 0;
+    let dragRelGapY = 0;
+
     function bringToFront(widget) {
         const allWidgets = document.querySelectorAll('.gcs-floating-widget');
         allWidgets.forEach(function(w) {
@@ -373,7 +375,6 @@
         widget.style.zIndex = '2147483647';
     }
 
-    // Applies drag-and-drop listeners to a header handle
     function makeDraggable(handle, draggedContainer) {
         let isDragging = false;
         let startX = 0;
@@ -403,7 +404,6 @@
             startX = e.clientX; 
             startY = e.clientY;
             
-            // Switch from right/bottom positioning to left/top positioning for dragging
             rectDrag = draggedContainer.getBoundingClientRect();
             draggedContainer.style.left = rectDrag.left + 'px'; 
             draggedContainer.style.top = rectDrag.top + 'px';
@@ -411,7 +411,7 @@
             draggedContainer.style.right = 'auto';
 
             if (isCoupled === true && isNotepadOpen === true) {
-                // CRITICAL FIX: If the other container is hidden (minimized), getBoundingClientRect() returns 0!
+                // Determine the other window's coordinates perfectly before moving
                 let isOtherHidden = (otherContainer === notepadWrapper && isMinimized === true);
                 
                 if (isOtherHidden === false) {
@@ -419,17 +419,15 @@
                     otherStartX = rectOther.left;
                     otherStartY = rectOther.top;
                 } else {
-                    // If it's hidden, safely extract its coordinates from its inline style memory
                     let parsedLeft = parseInt(otherContainer.style.left, 10);
                     let parsedTop = parseInt(otherContainer.style.top, 10);
                     
                     if (isNaN(parsedLeft) === false) {
                         otherStartX = parsedLeft;
                     } else {
-                        // Fallback: Snap it mathematically to the left of the main widget
                         let noteW = parseInt(noteSize.width, 10);
                         if (isNaN(noteW) === true) noteW = 240;
-                        otherStartX = rectDrag.left - noteW - 10;
+                        otherStartX = rectDrag.left - noteW - 15;
                     }
                     
                     if (isNaN(parsedTop) === false) {
@@ -471,9 +469,7 @@
         });
     }
 
-    // Saves the current position and size to Tampermonkey storage
     function savePosSize() {
-        // ALWAYS save the position, regardless of whether it is minimized or expanded
         mainWidget.style.right = 'auto';
         mainWidget.style.bottom = 'auto';
         notepadWrapper.style.right = 'auto';
@@ -488,7 +484,6 @@
             top: notepadWrapper.style.top 
         });
         
-        // ONLY save the sizes if the window is expanded
         if (isMinimized === false) {
             mainSize = { 
                 width: mainWidget.style.width, 
@@ -503,38 +498,58 @@
         };
         GM_setValue('note_size', noteSize);
     }
+    
+    // --- ACTIVE OVERLAP DEFENDER ---
+    // If the widgets are coupled and accidentally collide, violently snap them apart safely
+    function resolveOverlap() {
+        if (isCoupled === true && isNotepadOpen === true && isMinimized === false) {
+            const mRect = mainWidget.getBoundingClientRect();
+            const nRect = notepadWrapper.getBoundingClientRect();
+            
+            const isOverlapping = !(mRect.right <= nRect.left || 
+                                    mRect.left >= nRect.right || 
+                                    mRect.bottom <= nRect.top || 
+                                    mRect.top >= nRect.bottom);
+                                    
+            if (isOverlapping === true) {
+                notepadWrapper.style.right = 'auto';
+                notepadWrapper.style.bottom = 'auto';
+                
+                let newLeft = mRect.left - nRect.width - 15; 
+                
+                // If snapping left pushes it off screen, snap it right instead
+                if (newLeft < 0) {
+                    newLeft = mRect.right + 15;
+                }
+                
+                notepadWrapper.style.left = newLeft + 'px';
+                notepadWrapper.style.top = mRect.top + 'px';
+                
+                savePosSize();
+            }
+        }
+    }
+
     // ==========================================
     // 7. LIVE RESIZE OBSERVER (COUPLED SCALING)
     // ==========================================
     
-    // We use this flag to prevent infinite loops when the script resizes the other window programmatically
     let isSyncingSize = false;
     
-    // Parse the previous sizes safely to track how many pixels the user dragged
     let lastMainW = parseInt(mainSize.width, 10);
-    if (isNaN(lastMainW) === true) {
-        lastMainW = 270;
-    }
+    if (isNaN(lastMainW) === true) lastMainW = 270;
     
     let lastMainH = parseInt(mainSize.height, 10);
-    if (isNaN(lastMainH) === true) {
-        lastMainH = 400;
-    }
+    if (isNaN(lastMainH) === true) lastMainH = 400;
     
     let lastNoteW = parseInt(noteSize.width, 10);
-    if (isNaN(lastNoteW) === true) {
-        lastNoteW = 240;
-    }
+    if (isNaN(lastNoteW) === true) lastNoteW = 240;
     
     let lastNoteH = parseInt(noteSize.height, 10);
-    if (isNaN(lastNoteH) === true) {
-        lastNoteH = 400;
-    }
+    if (isNaN(lastNoteH) === true) lastNoteH = 400;
 
     const resizeObserver = new ResizeObserver(function(entries) {
-        if (isSyncingSize === true) {
-            return;
-        }
+        if (isSyncingSize === true) return;
 
         let deltaW = 0;
         let deltaH = 0;
@@ -598,12 +613,8 @@
                 lastNoteW = lastNoteW + deltaW;
                 lastNoteH = lastNoteH + deltaH;
                 
-                if (lastNoteW < 150) { 
-                    lastNoteW = 150; 
-                }
-                if (lastNoteH < 150) { 
-                    lastNoteH = 150; 
-                }
+                if (lastNoteW < 150) lastNoteW = 150; 
+                if (lastNoteH < 150) lastNoteH = 150; 
 
                 notepadWrapper.style.width = lastNoteW + 'px';
                 notepadWrapper.style.height = lastNoteH + 'px';
@@ -620,12 +631,8 @@
                 lastMainW = lastMainW + deltaW;
                 lastMainH = lastMainH + deltaH;
                 
-                if (lastMainW < 200) { 
-                    lastMainW = 200; 
-                }
-                if (lastMainH < 150) { 
-                    lastMainH = 150; 
-                }
+                if (lastMainW < 200) lastMainW = 200; 
+                if (lastMainH < 150) lastMainH = 150; 
 
                 mainWidget.style.width = lastMainW + 'px';
                 mainWidget.style.height = lastMainH + 'px';
@@ -657,24 +664,19 @@
             await navigator.clipboard.write([item]); 
             return true; 
         } catch (err) { 
-            // Fallback if website blocks cross-origin downloading
             GM_setClipboard(`<img src="${imgSrc}">`, 'html'); 
             return false; 
         }
     }
 
     window.addEventListener('keydown', function(e) { 
-        // Do not intercept if dashboard is open so typing in dashboard is unaffected by global listeners
-        if (isDashboardOpen === true) {
-            return;
-        }
+        if (isDashboardOpen === true) return;
 
         if (e.key === settings.hotkey) { 
             if (isTriggerDown === false) { 
                 isTriggerDown = true; 
                 hasClickedWhileTriggerDown = false; 
             } 
-            // Prevent typing spam inside the scratchpad while holding the key
             if (e.target && e.target.id === 'gcs-scratchpad-input') {
                 e.preventDefault(); 
             }
@@ -682,14 +684,11 @@
     });
     
     window.addEventListener('keyup', function(e) { 
-        if (isDashboardOpen === true) {
-            return;
-        }
+        if (isDashboardOpen === true) return;
 
         if (e.key === settings.hotkey) { 
             
             if (e.target && e.target.id === 'gcs-scratchpad-input' && hasClickedWhileTriggerDown === false) { 
-                // The user tapped the key inside the scratchpad: Type the character
                 const start = e.target.selectionStart; 
                 const end = e.target.selectionEnd;
                 e.target.value = e.target.value.substring(0, start) + settings.hotkey + e.target.value.substring(end); 
@@ -698,17 +697,14 @@
                 e.target.dispatchEvent(new Event('input', { bubbles: true })); 
             
             } else if (hasClickedWhileTriggerDown === false) {
-                // --- NEW LOGIC: TAP TO CAPTURE CLIPBOARD ---
-                // The user tapped the key WITHOUT clicking. Tell the desktop to grab the clipboard!
+                // Tap to capture OS Clipboard via Sync Server
                 GM_xmlhttpRequest({
                     method: 'POST',
                     url: 'http://localhost:9876/capture-clipboard',
                     onload: function(response) {
-                        // Desktop successfully captured the clipboard. Pull data to update UI.
                         pullFromDesktop();
                     },
                     onerror: async function(error) {
-                        // Desktop app is closed! Fallback to the browser's native clipboard API.
                         try {
                             const text = await navigator.clipboard.readText();
                             if (text !== '') {
@@ -721,7 +717,7 @@
                                 renderList();
                             }
                         } catch (err) {
-                            console.warn("Could not read browser clipboard. Please ensure clipboard permissions are allowed.");
+                            console.warn("Clipboard access denied.");
                         }
                     }
                 });
@@ -737,17 +733,13 @@
     });
 
     window.addEventListener('click', function(e) {
-        if (isDashboardOpen === true) {
-            return;
-        }
+        if (isDashboardOpen === true) return;
 
         const isClickOutside = !mainWidget.contains(e.target) && !notepadWrapper.contains(e.target) && !dashboardOverlay.contains(e.target);
         
         if (settings.autoCollapse === true && isMinimized === false && isClickOutside === true) {
             const toggleBtn = document.getElementById('gcs-toggle-btn');
-            if (toggleBtn !== null) {
-                toggleBtn.click();
-            }
+            if (toggleBtn !== null) toggleBtn.click();
         }
 
         if (isTriggerDown === true) {
@@ -767,23 +759,16 @@
                     text = val.substring(start, end).trim();
                 } else {
                     let lineStart = val.lastIndexOf('\n', start - 1);
-                    if (lineStart === -1) {
-                        lineStart = 0;
-                    } else {
-                        lineStart = lineStart + 1;
-                    }
+                    if (lineStart === -1) lineStart = 0;
+                    else lineStart = lineStart + 1;
                     
                     let lineEnd = val.indexOf('\n', start);
-                    if (lineEnd === -1) {
-                        lineEnd = val.length;
-                    }
+                    if (lineEnd === -1) lineEnd = val.length;
                     
                     text = val.substring(lineStart, lineEnd).trim();
                 }
                 
-                if (text !== '') {
-                    captured = { type: 'text', text: text };
-                }
+                if (text !== '') captured = { type: 'text', text: text };
             } else if (e.target && e.target.tagName.toLowerCase() === 'img') { 
                 captured = { type: 'image', text: e.target.src };
             } else { 
@@ -797,9 +782,7 @@
                     if (match !== null) {
                         text = text.substring(0, match.index + match[0].length).trim(); 
                     }
-                    if (text !== '') {
-                        captured = { type: 'text', text: text }; 
-                    }
+                    if (text !== '') captured = { type: 'text', text: text }; 
                 } 
             }
 
@@ -810,11 +793,8 @@
                     savedItems[0].text = savedItems[0].text + '\n' + captured.text; 
                 } else { 
                     savedItems.unshift(captured); 
-                    if (e.ctrlKey === true) {
-                        isCombining = false;
-                    } else {
-                        isCombining = true;
-                    }
+                    if (e.ctrlKey === true) isCombining = false;
+                    else isCombining = true;
                 }
                 
                 if (savedItems.length > settings.maxItems) {
@@ -1195,7 +1175,6 @@
 
     const headerControls = document.createElement('div');
     
-    // Ordered strictly: Gear, Page, Magnet, Reset, Minimize
     const settingsBtn = document.createElement('button'); 
     settingsBtn.textContent = '⚙️'; 
     settingsBtn.title = 'Settings';
@@ -1387,7 +1366,6 @@
         }
         darkModeCb.checked = isDarkMode; 
         
-        // Pass theme changes up to the desktop object
         settings.isDarkMode = isDarkMode;
         GM_setValue('gcs_settings', settings);
         pushToDesktop();
@@ -1704,6 +1682,9 @@
             mainWidget.style.bottom = defaultMainPos.bottom;
             savePosSize();
         }
+        
+        // Final sanity check for overlapping coupled windows
+        resolveOverlap();
     }, 500);
 
     // ==========================================
@@ -2261,7 +2242,7 @@
                 iconPrefix = '🖼️ ';
             }
             titleSpan.textContent = iconPrefix + newTitle; 
-            titleSpan.title = "Double-click to rename. Drag to reorder."; 
+            titleSpan.title = "Double-click to rename"; 
             renderTabs(); 
             
             if (isDashboardOpen === true) {
@@ -2832,8 +2813,8 @@
             
             notepadWrapper.style.left = 'auto'; 
             notepadWrapper.style.top = 'auto'; 
-            notepadWrapper.style.right = defaultNotePos.right; 
-            notepadWrapper.style.bottom = defaultNotePos.bottom;
+            notepadWrapper.style.right = dynamicNotePos.right; 
+            notepadWrapper.style.bottom = dynamicNotePos.bottom;
             notepadWrapper.style.width = defaultNoteSize.width; 
             notepadWrapper.style.height = defaultNoteSize.height;
             
@@ -2890,6 +2871,8 @@
             
             if (isNotepadOpen === true) {
                 notepadWrapper.style.display = 'flex'; 
+                // Wait for the browser to render display:flex before checking for collisions
+                setTimeout(resolveOverlap, 50);
             }
             
             settingsBtn.style.display = '';
