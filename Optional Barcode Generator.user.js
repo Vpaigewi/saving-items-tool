@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver - Barcode Module
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Optional add-on for Backtick Clipboard Saver. Injects a scanner-optimized hover barcode.
 // @author       Gemini
 // @match        *://*/*
 // @require      https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @downloadURL  https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/main/Optional%20Barcode%20Generator.user.js
+// @updateURL    https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/main/Optional%20Barcode%20Generator.user.js
 // @run-at       document-end
 // ==/UserScript==
 
@@ -23,10 +25,10 @@
     // ==========================================
     // GLOBAL TOOLTIP SETUP
     // ==========================================
-
+    
     let tooltip = document.getElementById('gcs-barcode-tooltip');
     let tooltipSvg;
-
+    
     // Create the global floating tooltip container once
     if (!tooltip) {
         tooltip = document.createElement('div');
@@ -35,7 +37,7 @@
         tooltip.style.display = 'none';
         tooltip.style.zIndex = '2147483647'; // Ensure it floats above absolutely everything
         // Barcode scanners require high contrast, so we force white/black regardless of dark mode
-        tooltip.style.backgroundColor = '#ffffff';
+        tooltip.style.backgroundColor = '#ffffff'; 
         tooltip.style.border = '2px solid #333333';
         tooltip.style.padding = '15px';
         tooltip.style.borderRadius = '8px';
@@ -55,7 +57,7 @@
 
     function injectSettings() {
         const settingsPanel = document.querySelector('.gcs-settings-panel');
-
+        
         // Only inject if the panel exists and we haven't already injected the toggle
         if (!settingsPanel || document.getElementById('gcs-barcode-setting')) {
             return;
@@ -73,20 +75,20 @@
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = isBarcodeEnabled;
-
+        
         cb.addEventListener('change', (e) => {
             isBarcodeEnabled = e.target.checked;
             GM_setValue('gcs_barcode_module_enabled', isBarcodeEnabled);
-
+            
             // The main script has a focus listener that wipes and redraws the UI.
-            // Dispatching a fake focus event forces the main app to cleanly re-render
+            // Dispatching a fake focus event forces the main app to cleanly re-render 
             // the list, which will instantly add or remove our barcode buttons!
             window.dispatchEvent(new Event('focus'));
         });
 
         row.appendChild(lbl);
         row.appendChild(cb);
-
+        
         // Insert this cleanly above the "Save Defaults" button
         const defaultsBtn = Array.from(settingsPanel.children).find(el => el.tagName === 'BUTTON' && el.textContent.includes('Default'));
         if (defaultsBtn) {
@@ -103,17 +105,17 @@
         if (row.querySelector('.gcs-barcode-btn')) return;
 
         const cs = row.querySelector('.cs');
-
+        
         // The main script structure uses a div for the button controls
         const controls = Array.from(row.children).find(el => el.tagName === 'DIV');
-
+        
         if (!cs || !controls) return;
-
+        
         // Barcodes only apply to text, so ignore rows containing images
         if (cs.querySelector('img')) return;
 
         // The main script hides the full, untruncated text inside the span's title attribute
-        const fullText = cs.title;
+        const fullText = cs.title; 
         if (!fullText) return;
 
         const barcodeBtn = document.createElement('button');
@@ -145,37 +147,37 @@
                     fontSize: 18,
                     fontOptions: "bold"
                 });
-
+                
                 // Show the tooltip so we can measure it
                 tooltip.style.display = 'block';
-
+                
                 // Calculate physical coordinates
                 const btnRect = barcodeBtn.getBoundingClientRect();
                 const ttRect = tooltip.getBoundingClientRect();
-
+                
                 // Try to place it to the left of the main widget
                 let targetLeft = btnRect.left - ttRect.width - 20;
-
+                
                 // If there isn't room on the left, place it on the right
                 if (targetLeft < 10) {
                     targetLeft = btnRect.right + 20;
                 }
-
+                
                 // Vertically align the center of the barcode with the button
                 let targetTop = btnRect.top + (btnRect.height / 2) - (ttRect.height / 2);
-
+                
                 // Keep it from clipping off the top or bottom of the monitor
                 if (targetTop < 10) targetTop = 10;
                 if (targetTop + ttRect.height > window.innerHeight - 10) {
                     targetTop = window.innerHeight - ttRect.height - 10;
                 }
-
+                
                 // Apply the calculated positions
                 tooltip.style.left = targetLeft + 'px';
                 tooltip.style.top = targetTop + 'px';
-
+                
                 barcodeBtn.style.color = '#4CAF50'; // Highlight the button to show it's active
-
+                
             } catch (e) {
                 // Silently fail if the text contains unsupported barcode characters
                 console.warn("Barcode generation failed for string:", fullText);
@@ -187,7 +189,7 @@
             tooltip.style.display = 'none';
             barcodeBtn.style.color = 'var(--gcs-text)';
         });
-
+        
         // Optional: Click the button to copy the raw text to clipboard as a fallback
         barcodeBtn.addEventListener('click', () => {
              GM_setClipboard(fullText, 'text');
