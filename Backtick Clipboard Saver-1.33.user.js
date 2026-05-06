@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver (Desktop Sync Edition)
 // @namespace    http://tampermonkey.net/
-// @version      1.39
-// @description  Hold ` to save. Syncs with Electron App. Active Overlap Defender and Dynamic Anchoring.
+// @version      1.40
+// @description  Hold ` to save. Syncs with Electron App. Edge-to-Edge Snapping, Lock Scaling, and 0,0 Bug Fixes.
 // @author       Gemini
 // @match        *://*/*
 // @grant        GM_setValue
@@ -36,7 +36,8 @@
         autoCollapse: false,
         fontSize: '13px',
         widgetTitle: 'Saved Items',
-        askBeforeClear: true
+        askBeforeClear: true,
+        lockScaling: false
     };
     
     // Load the main user settings object from storage
@@ -48,6 +49,9 @@
     }
     if (settings.askBeforeClear === undefined) {
         settings.askBeforeClear = true;
+    }
+    if (settings.lockScaling === undefined) {
+        settings.lockScaling = false;
     }
 
     // Interaction flags
@@ -89,6 +93,7 @@
     ];
     let rawTabs = GM_getValue('notepad_tabs', defaultTabs);
     
+    // --- BUG FIX: EMPTY ARRAY CRASH ---
     // If the storage accidentally saved an empty array, force it back to defaults
     if (Array.isArray(rawTabs) === false || rawTabs.length === 0) {
         rawTabs = [
@@ -225,23 +230,19 @@
         });
     }
 
-    // When the browser window gets focus, pause the desktop app's hotkey
     window.addEventListener('focus', function() {
         setDesktopHotkeyStatus(true);
-        pullFromDesktop(); // Also refresh data just in case
+        pullFromDesktop(); 
     });
 
-    // When the browser window loses focus, tell the desktop app to resume the hotkey
     window.addEventListener('blur', function() {
         setDesktopHotkeyStatus(false);
     });
-    
-    // If the user closes the tab entirely, force the desktop app to resume the hotkey
+
     window.addEventListener('beforeunload', function() {
         setDesktopHotkeyStatus(false);
     });
 
-    // Check focus on initial load just in case the browser loads in the background
     if (document.hasFocus() === true) {
         setDesktopHotkeyStatus(true);
     }
@@ -254,7 +255,6 @@
     const defaultMainSize = { width: '270px', height: '400px' };
     const defaultNoteSize = { width: '240px', height: '400px' };
 
-    // Function to purge corrupt size strings
     function sanitizeSize(obj, fallback) {
         if (obj === undefined || obj === null) {
             return fallback;
@@ -275,13 +275,12 @@
     let mainSize = sanitizeSize(GM_getValue('main_size', defaultMainSize), defaultMainSize);
     let noteSize = sanitizeSize(GM_getValue('note_size', defaultNoteSize), defaultNoteSize);
 
-    // --- DYNAMIC ANCHOR FIX ---
-    // Mathematically calculate where the notepad should sit so the main widget never eats it
+    // --- DYNAMIC ANCHOR FIX (EDGE-TO-EDGE) ---
+    // Mathematically calculate where the notepad should sit so it sits flush edge-to-edge
     let parsedMainW = parseInt(mainSize.width, 10);
     if (isNaN(parsedMainW) === true) parsedMainW = 270;
-    const dynamicNotePos = { right: (20 + parsedMainW + 15) + 'px', bottom: '20px', left: 'auto', top: 'auto' };
+    const dynamicNotePos = { right: (20 + parsedMainW) + 'px', bottom: '20px', left: 'auto', top: 'auto' };
 
-    // Safely load Positions and prioritize absolute Left/Top coordinates if they exist
     let rawMainPos = GM_getValue('main_pos', null);
     let mainPos = defaultMainPos;
     if (rawMainPos !== null && rawMainPos.left !== undefined && rawMainPos.left !== 'auto') {
@@ -299,14 +298,11 @@
     // ==========================================
 
     window.addEventListener('keydown', function(e) {
-        // Look for: Ctrl + Alt + 0
         if (e.ctrlKey === true && e.altKey === true && e.key === '0') {
             e.preventDefault();
             
-            // Delete user-defined default layouts to clear corruption
             GM_deleteValue('default_gcs_config');
             
-            // Force main widget to factory defaults
             mainWidget.style.left = 'auto';
             mainWidget.style.top = 'auto';
             mainWidget.style.right = defaultMainPos.right;
@@ -314,7 +310,6 @@
             mainWidget.style.width = defaultMainSize.width;
             mainWidget.style.height = defaultMainSize.height;
 
-            // Force notepad widget to factory defaults using the dynamic anchor
             notepadWrapper.style.left = 'auto';
             notepadWrapper.style.top = 'auto';
             notepadWrapper.style.right = dynamicNotePos.right;
@@ -322,17 +317,14 @@
             notepadWrapper.style.width = defaultNoteSize.width;
             notepadWrapper.style.height = defaultNoteSize.height;
 
-            // Force coupling back ON
             isCoupled = true;
             GM_setValue('is_coupled', true);
             magnetBtn.style.opacity = '1';
 
-            // Ensure window is expanded
             isMinimized = false;
             GM_setValue('is_minimized', false);
             toggleBtn.textContent = '−';
 
-            // Save the clean coordinates
             savePosSize();
             
             alert('Panic Button Triggered!\n\nWidget has been factory reset and moved to the bottom right.');
@@ -351,7 +343,6 @@
     mainWidget.className = 'gcs-floating-widget'; 
     mainWidget.id = 'gcs-main-widget';
 
-    // The Live Overlay Container
     const dashboardOverlay = document.createElement('div');
     dashboardOverlay.id = 'gcs-live-dashboard';
 
@@ -380,6 +371,7 @@
         let startX = 0;
         let startY = 0;
         let rectDrag = null;
+        let rectOther = null;
         
         let otherStartX = 0;
         let otherStartY = 0;
@@ -411,13 +403,21 @@
             draggedContainer.style.right = 'auto';
 
             if (isCoupled === true && isNotepadOpen === true) {
-                // Determine the other window's coordinates perfectly before moving
+                // --- BUG FIX: 0,0 MINIMIZED DRAG GLITCH ---
                 let isOtherHidden = (otherContainer === notepadWrapper && isMinimized === true);
                 
                 if (isOtherHidden === false) {
-                    let rectOther = otherContainer.getBoundingClientRect();
+                    rectOther = otherContainer.getBoundingClientRect();
                     otherStartX = rectOther.left;
                     otherStartY = rectOther.top;
+
+                    otherContainer.style.left = otherStartX + 'px';
+                    otherContainer.style.top = otherStartY + 'px';
+                    otherContainer.style.bottom = 'auto';
+                    otherContainer.style.right = 'auto';
+
+                    dragRelGapX = otherStartX - rectDrag.left;
+                    dragRelGapY = otherStartY - rectDrag.top;
                 } else {
                     let parsedLeft = parseInt(otherContainer.style.left, 10);
                     let parsedTop = parseInt(otherContainer.style.top, 10);
@@ -425,9 +425,10 @@
                     if (isNaN(parsedLeft) === false) {
                         otherStartX = parsedLeft;
                     } else {
+                        // Edge-to-Edge fallback calculation
                         let noteW = parseInt(noteSize.width, 10);
                         if (isNaN(noteW) === true) noteW = 240;
-                        otherStartX = rectDrag.left - noteW - 15;
+                        otherStartX = rectDrag.left - noteW; 
                     }
                     
                     if (isNaN(parsedTop) === false) {
@@ -435,12 +436,15 @@
                     } else {
                         otherStartY = rectDrag.top;
                     }
+
+                    otherContainer.style.left = otherStartX + 'px';
+                    otherContainer.style.top = otherStartY + 'px';
+                    otherContainer.style.bottom = 'auto';
+                    otherContainer.style.right = 'auto';
+
+                    dragRelGapX = otherStartX - rectDrag.left;
+                    dragRelGapY = otherStartY - rectDrag.top;
                 }
-                
-                otherContainer.style.left = otherStartX + 'px'; 
-                otherContainer.style.top = otherStartY + 'px';
-                otherContainer.style.bottom = 'auto';
-                otherContainer.style.right = 'auto';
             }
             bringToFront(draggedContainer);
         });
@@ -456,8 +460,8 @@
             draggedContainer.style.top = (rectDrag.top + dy) + 'px';
             
             if (isCoupled === true && isNotepadOpen === true) { 
-                otherContainer.style.left = (otherStartX + dx) + 'px'; 
-                otherContainer.style.top = (otherStartY + dy) + 'px'; 
+                otherContainer.style.left = (rectDrag.left + dx + dragRelGapX) + 'px'; 
+                otherContainer.style.top = (rectDrag.top + dy + dragRelGapY) + 'px'; 
             }
         });
 
@@ -498,9 +502,8 @@
         };
         GM_setValue('note_size', noteSize);
     }
-    
-    // --- ACTIVE OVERLAP DEFENDER ---
-    // If the widgets are coupled and accidentally collide, violently snap them apart safely
+
+    // --- ACTIVE OVERLAP DEFENDER (EDGE-TO-EDGE SNAP) ---
     function resolveOverlap() {
         if (isCoupled === true && isNotepadOpen === true && isMinimized === false) {
             const mRect = mainWidget.getBoundingClientRect();
@@ -515,11 +518,12 @@
                 notepadWrapper.style.right = 'auto';
                 notepadWrapper.style.bottom = 'auto';
                 
-                let newLeft = mRect.left - nRect.width - 15; 
+                // Snap edge to edge: right side of notepad touches left side of main widget
+                let newLeft = mRect.left - nRect.width; 
                 
-                // If snapping left pushes it off screen, snap it right instead
+                // If snapping left pushes it off screen, snap it flush to the right side instead
                 if (newLeft < 0) {
-                    newLeft = mRect.right + 15;
+                    newLeft = mRect.right;
                 }
                 
                 notepadWrapper.style.left = newLeft + 'px';
@@ -530,23 +534,17 @@
         }
     }
 
+
     // ==========================================
     // 7. LIVE RESIZE OBSERVER (COUPLED SCALING)
     // ==========================================
     
     let isSyncingSize = false;
     
-    let lastMainW = parseInt(mainSize.width, 10);
-    if (isNaN(lastMainW) === true) lastMainW = 270;
-    
-    let lastMainH = parseInt(mainSize.height, 10);
-    if (isNaN(lastMainH) === true) lastMainH = 400;
-    
-    let lastNoteW = parseInt(noteSize.width, 10);
-    if (isNaN(lastNoteW) === true) lastNoteW = 240;
-    
-    let lastNoteH = parseInt(noteSize.height, 10);
-    if (isNaN(lastNoteH) === true) lastNoteH = 400;
+    let lastMainW = parseInt(mainSize.width, 10) || 270;
+    let lastMainH = parseInt(mainSize.height, 10) || 400;
+    let lastNoteW = parseInt(noteSize.width, 10) || 240;
+    let lastNoteH = parseInt(noteSize.height, 10) || 400;
 
     const resizeObserver = new ResizeObserver(function(entries) {
         if (isSyncingSize === true) return;
@@ -606,7 +604,8 @@
             }
         }
 
-        if (isCoupled === true && isNotepadOpen === true && isMinimized === false && activeTarget !== null) {
+        // Apply Locked Scaling logic if the user has it enabled
+        if (settings.lockScaling === true && isCoupled === true && isNotepadOpen === true && isMinimized === false && activeTarget !== null) {
             isSyncingSize = true;
             
             if (activeTarget === 'main') {
@@ -648,6 +647,11 @@
             
             setTimeout(function() {
                 isSyncingSize = false;
+                resolveOverlap(); // Ensure they snap edge-to-edge if scaling caused a collision
+            }, 50);
+        } else if (activeTarget !== null) {
+            setTimeout(function() {
+                resolveOverlap(); // Prevent manual unsynced scaling from overlapping
             }, 50);
         }
     });
@@ -670,7 +674,9 @@
     }
 
     window.addEventListener('keydown', function(e) { 
-        if (isDashboardOpen === true) return;
+        if (isDashboardOpen === true) {
+            return;
+        }
 
         if (e.key === settings.hotkey) { 
             if (isTriggerDown === false) { 
@@ -684,7 +690,9 @@
     });
     
     window.addEventListener('keyup', function(e) { 
-        if (isDashboardOpen === true) return;
+        if (isDashboardOpen === true) {
+            return;
+        }
 
         if (e.key === settings.hotkey) { 
             
@@ -697,7 +705,7 @@
                 e.target.dispatchEvent(new Event('input', { bubbles: true })); 
             
             } else if (hasClickedWhileTriggerDown === false) {
-                // Tap to capture OS Clipboard via Sync Server
+                // The user tapped the key WITHOUT clicking. Tell the desktop to grab the clipboard!
                 GM_xmlhttpRequest({
                     method: 'POST',
                     url: 'http://localhost:9876/capture-clipboard',
@@ -717,7 +725,7 @@
                                 renderList();
                             }
                         } catch (err) {
-                            console.warn("Clipboard access denied.");
+                            console.warn("Could not read browser clipboard. Please ensure clipboard permissions are allowed.");
                         }
                     }
                 });
@@ -733,13 +741,17 @@
     });
 
     window.addEventListener('click', function(e) {
-        if (isDashboardOpen === true) return;
+        if (isDashboardOpen === true) {
+            return;
+        }
 
         const isClickOutside = !mainWidget.contains(e.target) && !notepadWrapper.contains(e.target) && !dashboardOverlay.contains(e.target);
         
         if (settings.autoCollapse === true && isMinimized === false && isClickOutside === true) {
             const toggleBtn = document.getElementById('gcs-toggle-btn');
-            if (toggleBtn !== null) toggleBtn.click();
+            if (toggleBtn !== null) {
+                toggleBtn.click();
+            }
         }
 
         if (isTriggerDown === true) {
@@ -759,16 +771,23 @@
                     text = val.substring(start, end).trim();
                 } else {
                     let lineStart = val.lastIndexOf('\n', start - 1);
-                    if (lineStart === -1) lineStart = 0;
-                    else lineStart = lineStart + 1;
+                    if (lineStart === -1) {
+                        lineStart = 0;
+                    } else {
+                        lineStart = lineStart + 1;
+                    }
                     
                     let lineEnd = val.indexOf('\n', start);
-                    if (lineEnd === -1) lineEnd = val.length;
+                    if (lineEnd === -1) {
+                        lineEnd = val.length;
+                    }
                     
                     text = val.substring(lineStart, lineEnd).trim();
                 }
                 
-                if (text !== '') captured = { type: 'text', text: text };
+                if (text !== '') {
+                    captured = { type: 'text', text: text };
+                }
             } else if (e.target && e.target.tagName.toLowerCase() === 'img') { 
                 captured = { type: 'image', text: e.target.src };
             } else { 
@@ -782,7 +801,9 @@
                     if (match !== null) {
                         text = text.substring(0, match.index + match[0].length).trim(); 
                     }
-                    if (text !== '') captured = { type: 'text', text: text }; 
+                    if (text !== '') {
+                        captured = { type: 'text', text: text }; 
+                    }
                 } 
             }
 
@@ -793,8 +814,11 @@
                     savedItems[0].text = savedItems[0].text + '\n' + captured.text; 
                 } else { 
                     savedItems.unshift(captured); 
-                    if (e.ctrlKey === true) isCombining = false;
-                    else isCombining = true;
+                    if (e.ctrlKey === true) {
+                        isCombining = false;
+                    } else {
+                        isCombining = true;
+                    }
                 }
                 
                 if (savedItems.length > settings.maxItems) {
@@ -1175,6 +1199,7 @@
 
     const headerControls = document.createElement('div');
     
+    // Ordered strictly: Gear, Page, Magnet, Reset, Minimize
     const settingsBtn = document.createElement('button'); 
     settingsBtn.textContent = '⚙️'; 
     settingsBtn.title = 'Settings';
@@ -1352,6 +1377,15 @@
         GM_setValue('gcs_settings', settings); 
         pushToDesktop(); // Sync update
     });
+
+    const lockScaleCb = document.createElement('input');
+    lockScaleCb.type = 'checkbox';
+    lockScaleCb.checked = settings.lockScaling;
+    lockScaleCb.addEventListener('change', function(e) {
+        settings.lockScaling = e.target.checked;
+        GM_setValue('gcs_settings', settings);
+        pushToDesktop(); // Sync update
+    });
     
     const darkModeCb = document.createElement('input'); 
     darkModeCb.type = 'checkbox'; 
@@ -1366,6 +1400,7 @@
         }
         darkModeCb.checked = isDarkMode; 
         
+        // Pass theme changes up to the desktop object
         settings.isDarkMode = isDarkMode;
         GM_setValue('gcs_settings', settings);
         pushToDesktop();
@@ -1570,6 +1605,7 @@
     settingsPanel.appendChild(createRow('Keep Items:', keepInput));
     settingsPanel.appendChild(createRow('Dark Mode:', darkModeCb));
     settingsPanel.appendChild(createRow('Auto-Collapse:', collapseCb));
+    settingsPanel.appendChild(createRow('Lock Scaling:', lockScaleCb));
     settingsPanel.appendChild(createRow('List Size:', createSizeGroup(mainWInput, mainHInput)));
     settingsPanel.appendChild(createRow('Note Size:', createSizeGroup(noteWInput, noteHInput)));
     settingsPanel.appendChild(defaultsBtn);
@@ -1669,6 +1705,10 @@
     document.body.appendChild(mainWidget);
     document.body.appendChild(dashboardOverlay);
     makeDraggable(header, mainWidget);
+    
+    // Attach the Lock Scaling observer to both widgets
+    resizeObserver.observe(mainWidget);
+    resizeObserver.observe(notepadWrapper);
 
     // Ensure the window renders within bounds on fresh load
     setTimeout(function() {
@@ -2242,7 +2282,7 @@
                 iconPrefix = '🖼️ ';
             }
             titleSpan.textContent = iconPrefix + newTitle; 
-            titleSpan.title = "Double-click to rename"; 
+            titleSpan.title = "Double-click to rename. Drag to reorder."; 
             renderTabs(); 
             
             if (isDashboardOpen === true) {
@@ -2734,6 +2774,7 @@
         
         if (isNotepadOpen === true && isMinimized === false) {
             notepadWrapper.style.display = 'flex';
+            setTimeout(resolveOverlap, 50); // Ensure they snap edge-to-edge if opening causes a collision
         } else {
             notepadWrapper.style.display = 'none';
         }
@@ -2871,8 +2912,7 @@
             
             if (isNotepadOpen === true) {
                 notepadWrapper.style.display = 'flex'; 
-                // Wait for the browser to render display:flex before checking for collisions
-                setTimeout(resolveOverlap, 50);
+                setTimeout(resolveOverlap, 50); // Ensure they snap edge-to-edge if opening causes a collision
             }
             
             settingsBtn.style.display = '';
