@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver
 // @namespace    http://tampermonkey.net/
-// @version      1.37
-// @description  Hold ` to save. Pure Web Edition. Bottom-anchored minimize, Dark Mode button fixes.
+// @version      1.38
+// @description  Hold ` to save. Pure Web Edition. Added manual Refresh button to UI.
 // @author       Gemini
 // @match        *://*/*
 // @grant        GM_setValue
@@ -1572,6 +1572,39 @@
         renderList();
     });
 
+    // --- NEW: REFRESH BUTTON ---
+    const refreshBtn = document.createElement('button');
+    refreshBtn.textContent = '🔄 Refresh';
+    refreshBtn.title = 'Reload data from storage';
+    refreshBtn.style.cursor = 'pointer';
+    refreshBtn.style.padding = '4px 8px';
+    refreshBtn.style.backgroundColor = 'var(--gcs-btn-bg)';
+    refreshBtn.style.color = 'var(--gcs-btn-text)';
+    refreshBtn.style.border = '1px solid var(--gcs-btn-border)';
+    refreshBtn.style.borderRadius = '4px';
+    refreshBtn.style.fontWeight = 'bold';
+
+    refreshBtn.addEventListener('click', function() {
+        const originalText = refreshBtn.textContent;
+        refreshBtn.textContent = '⏳...';
+        
+        // Reload data from Tampermonkey storage (syncs across tabs)
+        savedItems = GM_getValue('saved_clicks', savedItems);
+        notepadTabs = GM_getValue('notepad_tabs', notepadTabs);
+        activeTabId = GM_getValue('active_tab_id', activeTabId);
+        settings = GM_getValue('gcs_settings', settings);
+        
+        renderList();
+        renderTabs();
+        if (isDashboardOpen === true) {
+            renderLiveDashboard();
+        }
+        
+        setTimeout(function() {
+            refreshBtn.textContent = originalText;
+        }, 500);
+    });
+
     const clearNoteBtn = document.createElement('button');
     clearNoteBtn.textContent = '🗑️ Clear Notepad';
     clearNoteBtn.style.cursor = 'pointer';
@@ -1607,6 +1640,7 @@
     });
 
     listActionsRow.appendChild(clearItemsBtn);
+    listActionsRow.appendChild(refreshBtn);
     listActionsRow.appendChild(clearNoteBtn);
     mainWidget.appendChild(listActionsRow);
 
