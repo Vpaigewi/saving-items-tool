@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver
 // @namespace    http://tampermonkey.net/
-// @version      1.39
+// @version      1.39.1
 // @description  Hold ` to save. Pure Web Edition. Added manual Refresh button to UI.
 // @author       Gemini
 // @match        *://*/*
@@ -2520,7 +2520,7 @@
     // 17. RENDERING LOGIC (LIST)
     // ==========================================
 
-    function renderList() {
+  function renderList() {
         listContainer.innerHTML = '';
 
         if (savedItems.length === 0) {
@@ -2702,7 +2702,13 @@
             bg.appendChild(cb);
             bg.appendChild(del);
 
-// --- NEW: PUSH ALL TO NOTE BUTTON ---
+            row.appendChild(cs);
+            row.appendChild(bg);
+
+            listContainer.appendChild(row);
+        });
+
+        // --- NEW: PUSH ALL TO NOTE BUTTON ---
         if (savedItems.length > 0) {
             const pushAllBtn = document.createElement('button');
             pushAllBtn.textContent = '📝 Push All to New Note';
@@ -2778,7 +2784,7 @@
             listContainer.appendChild(pushAllBtn);
         }
     }
-
+    
     // ==========================================
     // 18. ACTION BUTTON EVENTS
     // ==========================================
