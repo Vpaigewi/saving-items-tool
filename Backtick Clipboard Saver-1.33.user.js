@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver
 // @namespace    http://tampermonkey.net/
-// @version      1.38
+// @version      1.39
 // @description  Hold ` to save. Pure Web Edition. Added manual Refresh button to UI.
 // @author       Gemini
 // @match        *://*/*
@@ -392,39 +392,62 @@
         GM_setValue('note_size', noteSize);
     }
     
-    // Snaps windows perfectly edge-to-edge
-    function snapToMain() {
-        if (isMinimized === true) return; // Don't snap if main is collapsed
+   // Centers both windows on the screen and docks them together
+    function centerAndSnapWidgets() {
+        if (isMinimized === true) return; 
+        
+        // Force coupling ON if it isn't already
+        isCoupled = true;
+        GM_setValue('is_coupled', true);
+        if (typeof magnetBtn !== 'undefined' && magnetBtn !== null) {
+            magnetBtn.style.opacity = '1';
+        }
+
+        // Force notepad OPEN if it isn't already
+        if (isNotepadOpen === false) {
+            isNotepadOpen = true;
+            GM_setValue('is_notepad_open', true);
+            notepadWrapper.style.display = 'flex';
+            if (typeof noteToggleBtn !== 'undefined' && noteToggleBtn !== null) {
+                noteToggleBtn.style.opacity = '1';
+            }
+        }
+        
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
         
         const mRect = mainWidget.getBoundingClientRect();
         const nRect = notepadWrapper.getBoundingClientRect();
         
-        notepadWrapper.style.right = 'auto';
-        notepadWrapper.style.bottom = 'auto';
-        
-        // 1. Snap Left/Right Edge
-        let newLeft = mRect.left - nRect.width;
-        if (newLeft < 0) {
-            newLeft = mRect.right; // Snap to right side if no room on left
-        }
-        
-        notepadWrapper.style.left = newLeft + 'px';
-        
-        // 2. Align Tops
-        notepadWrapper.style.top = mRect.top + 'px';
-        
-        // 3. Match Heights
+        // Match heights for a clean visual docking
         notepadWrapper.style.height = mRect.height + 'px';
-        
-        // Ensure inputs reflect new height
         if (noteHInput !== undefined) {
             noteHInput.value = mRect.height;
         }
         noteSize.height = mRect.height + 'px';
         
+        // Calculate combined width + 10px gap
+        const combinedWidth = mRect.width + nRect.width + 10;
+        
+        const startX = (viewportWidth - combinedWidth) / 2;
+        const startY = (viewportHeight - mRect.height) / 2;
+        
+        // Strip auto anchors
+        mainWidget.style.right = 'auto';
+        mainWidget.style.bottom = 'auto';
+        notepadWrapper.style.right = 'auto';
+        notepadWrapper.style.bottom = 'auto';
+        
+        // Apply centered positions (main on left, note on right)
+        mainWidget.style.left = startX + 'px';
+        mainWidget.style.top = startY + 'px';
+        
+        notepadWrapper.style.left = (startX + mRect.width + 10) + 'px';
+        notepadWrapper.style.top = startY + 'px';
+        
         savePosSize();
+        bringToFront(mainWidget);
     }
-    
     // --- ACTIVE OVERLAP DEFENDER (EDGE-TO-EDGE SNAP) ---
     function resolveOverlap() {
         if (isCoupled === true && isNotepadOpen === true && isMinimized === false) {
@@ -1019,18 +1042,11 @@
     snapBtn.addEventListener('mousedown', function(e) {
         e.stopPropagation(); // prevent drag logic from firing
     });
-    snapBtn.addEventListener('click', function(e) {
+   snapBtn.addEventListener('click', function(e) {
         e.stopPropagation();
-        if (isCoupled === false) {
-            isCoupled = true;
-            GM_setValue('is_coupled', true);
-            if (typeof magnetBtn !== 'undefined' && magnetBtn !== null) {
-                magnetBtn.style.opacity = '1';
-            }
-        }
-        snapToMain();
+        centerAndSnapWidgets();
     });
-
+   
     notepadHeader.appendChild(notepadTitleSpan);
     notepadHeader.appendChild(snapBtn);
 
@@ -2686,11 +2702,81 @@
             bg.appendChild(cb);
             bg.appendChild(del);
 
-            row.appendChild(cs);
-            row.appendChild(bg);
+// --- NEW: PUSH ALL TO NOTE BUTTON ---
+        if (savedItems.length > 0) {
+            const pushAllBtn = document.createElement('button');
+            pushAllBtn.textContent = '📝 Push All to New Note';
+            pushAllBtn.title = 'Export all current items to a new scratchpad tab';
+            pushAllBtn.style.width = '100%';
+            pushAllBtn.style.padding = '8px';
+            pushAllBtn.style.marginTop = '10px';
+            pushAllBtn.style.marginBottom = '5px';
+            pushAllBtn.style.backgroundColor = 'var(--gcs-btn-bg)';
+            pushAllBtn.style.color = 'var(--gcs-btn-text)';
+            pushAllBtn.style.border = '1px solid var(--gcs-btn-border)';
+            pushAllBtn.style.borderRadius = '4px';
+            pushAllBtn.style.cursor = 'pointer';
+            pushAllBtn.style.fontWeight = 'bold';
+            pushAllBtn.style.flexShrink = '0'; // Prevent it from squishing
 
-            listContainer.appendChild(row);
-        });
+            pushAllBtn.addEventListener('mouseover', function() {
+                pushAllBtn.style.filter = 'brightness(0.95)';
+            });
+            pushAllBtn.addEventListener('mouseout', function() {
+                pushAllBtn.style.filter = 'none';
+            });
+
+            pushAllBtn.addEventListener('click', function() {
+                // Combine all items, handling images safely
+                const combinedText = savedItems.map(function(item) {
+                    if (item.type === 'image') {
+                        return '[Image URL: ' + item.text + ']';
+                    }
+                    return item.text;
+                }).join('\n\n---\n\n'); // Add a nice separator between items
+
+                // Create a new tab
+                const newId = Date.now();
+                notepadTabs.push({
+                    id: newId,
+                    title: 'List Export',
+                    text: combinedText,
+                    type: 'text',
+                    color: '',
+                    textColor: ''
+                });
+                
+                // Set as active tab and save
+                activeTabId = newId;
+                GM_setValue('notepad_tabs', notepadTabs);
+                GM_setValue('active_tab_id', activeTabId);
+
+                // Ensure notepad is open and visible
+                isNotepadOpen = true;
+                GM_setValue('is_notepad_open', true);
+                notepadWrapper.style.display = 'flex';
+                if (typeof noteToggleBtn !== 'undefined' && noteToggleBtn !== null) {
+                    noteToggleBtn.style.opacity = '1';
+                }
+                
+                renderTabs();
+                if (isDashboardOpen === true) renderLiveDashboard();
+                
+                // Visual feedback
+                const origText = pushAllBtn.textContent;
+                pushAllBtn.textContent = '✓ Pushed!';
+                pushAllBtn.style.backgroundColor = 'var(--gcs-success-bg)';
+                pushAllBtn.style.borderColor = 'var(--gcs-success-border)';
+                
+                setTimeout(function() {
+                    pushAllBtn.textContent = origText;
+                    pushAllBtn.style.backgroundColor = 'var(--gcs-btn-bg)';
+                    pushAllBtn.style.borderColor = 'var(--gcs-btn-border)';
+                }, 1000);
+            });
+            
+            listContainer.appendChild(pushAllBtn);
+        }
     }
 
     // ==========================================
@@ -2736,6 +2822,7 @@
 
         if (isCoupled === true) {
             magnetBtn.style.opacity = '1';
+            centerAndSnapWidgets(); // Snap to center when coupling is turned on
         } else {
             magnetBtn.style.opacity = '0.4';
         }
