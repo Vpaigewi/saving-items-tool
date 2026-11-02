@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver
 // @namespace    http://tampermonkey.net/
-// @version      1.39.1
+// @version      1.39.2
 // @description  Hold ` to save. Pure Web Edition. Added manual Refresh button to UI.
 // @author       Paige
 // @match        *://*/*
