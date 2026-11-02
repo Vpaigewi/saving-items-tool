@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Backtick Clipboard Saver - Barcode Module
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.2.1
 // @description  Optional add-on for Backtick Clipboard Saver. Injects a scanner-optimized hover barcode.
-// @author       Gemini
+// @author       Paige
 // @match        *://*/*
 // @require      https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js
 // @grant        GM_setValue
