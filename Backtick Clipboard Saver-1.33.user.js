@@ -3,12 +3,13 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.39.1
 // @description  Hold ` to save. Pure Web Edition. Added manual Refresh button to UI.
-// @author       Gemini
+// @author       Paige
 // @match        *://*/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_setClipboard
+// @grant        GM_xmlhttpRequest
 // @downloadURL  https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/main/Backtick%20Clipboard%20Saver-1.33.user.js
 // @updateURL    https://github.com/Vpaigewi/saving-items-tool/raw/refs/heads/main/Backtick%20Clipboard%20Saver-1.33.user.js
 // @run-at       document-end
@@ -84,7 +85,7 @@
     let isNotepadOpen = GM_getValue('is_notepad_open', false);
     let isCoupled = GM_getValue('is_coupled', true);
 
-    // Load the Scratchpad tabs
+    // Load the Scratchpad tabs                    
     let defaultTabs = [
         { id: Date.now(), title: 'Note 1', text: '', type: 'text', color: '', textColor: '' }
     ];
@@ -609,20 +610,28 @@
     // 7. EVENT INTERCEPTORS & COPY LOGIC
     // ==========================================
 
-    async function copyImageToClipboard(imgSrc) {
-        try {
-            const response = await fetch(imgSrc);
-            const blob = await response.blob();
-            const item = new ClipboardItem({[blob.type]: blob});
-            await navigator.clipboard.write([item]);
-            return true;
-        } catch (err) {
-            // Fallback if website blocks cross-origin downloading
-            GM_setClipboard(`<img src="${imgSrc}">`, 'html');
-            return false;
-        }
-    }
+  async function copyImageToClipboard(imgSrc) {
+    try {
+        // Use GM_xmlhttpRequest to bypass CORS restrictions
+        const blob = await new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: imgSrc,
+                responseType: 'blob',
+                onload: (response) => resolve(response.response),
+                onerror: (err) => reject(err)
+            });
+        });
 
+        const item = new ClipboardItem({ [blob.type]: blob });
+        await navigator.clipboard.write([item]);
+        return true;
+    } catch (err) {
+        // Final fallback if everything else fails
+        GM_setClipboard(`<img src="${imgSrc}">`, 'html');
+        return false;
+    }
+}
     window.addEventListener('keydown', function(e) {
         // Do not intercept if dashboard is open so typing in dashboard is unaffected by global listeners
         if (isDashboardOpen === true) {
